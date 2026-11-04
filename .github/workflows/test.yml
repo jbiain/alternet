@@ -1,0 +1,25 @@
+name: tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      # Old pip/setuptools can silently mis-build this as a nameless package with no entry point - a real
+      # failure mode hit while testing the installer (see install.sh in gateway.py); guard against it here too.
+      - run: pip install --upgrade "pip>=23" "setuptools>=61"
+      - run: pip install -e .
+      - run: python -m unittest tests.test_site -v
+      # test_network.py drives real subprocesses over Reticulum on loopback; slower, run on one version only
+      - if: matrix.python-version == '3.12'
+        run: python -m unittest tests.test_network -v
