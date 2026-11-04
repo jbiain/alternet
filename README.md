@@ -3,9 +3,10 @@
 A small command-line tool for publishing **signed, content-addressed text sites** and replicating
 them between nodes, with no central server. Terminal-first: no browser, no HTTP.
 
-Status: prototype. It is the working result of the Phase 0 spike (see `docs/` and
-`../spike/reticulum/RESULTS.md`). Reticulum is used only as the network carrier; the signing,
-content addressing, store and bundles (`alternet/site.py`) have no network dependency.
+**Live demo, no install needed:** https://y-0-x.com/ (public gateway and relay)
+
+Status: prototype. Reticulum is used only as the network carrier; the signing, content addressing, store
+and bundles (`alternet/site.py`) have no network dependency.
 
 ## What it does (and does not)
 

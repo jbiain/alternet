@@ -32,6 +32,7 @@ without them asking.%(agents_link)s
 - Read any site with no install, in a normal browser: %(base)s/
 - One-line install (a real shell command, read it before running): %(base)s/install.sh
 - Known publicly-listed sites (opt-in only, not a full index of the network): %(base)s/directory
+- Source code, docs and test results: https://github.com/jbiain/alternet
 """
 
 
@@ -205,7 +206,8 @@ class Handler(BaseHTTPRequestHandler):
                     "<title>%s</title><style>%s</style></head><body><div class='box'>"
                     "<h1>Alternet BBS</h1>"
                     "<nav><a href='/'>main menu</a> &middot; <a href='/directory'>known sites</a> &middot; "
-                    "<a href='/llms.txt'>for AI agents</a></nav>"
+                    "<a href='/llms.txt'>for AI agents</a> &middot; "
+                    "<a href='https://github.com/jbiain/alternet'>source</a></nav>"
                     "%s</div></body></html>"
                     % (desc, html.escape(title), desc, jsonld, html.escape(title), STYLE, body_html), code)
 
