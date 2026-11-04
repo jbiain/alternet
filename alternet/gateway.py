@@ -171,6 +171,8 @@ button{cursor:pointer}
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "AlternetGateway/0.1"
+    timeout = 20  # drop a connection that sends nothing for 20s - without this a slow/malicious client
+                  # can hold a thread open indefinitely (a real gap on a server now reachable by anyone)
 
     def log_message(self, fmt, *args):
         pass  # keep it quiet; this is a local convenience, not a service with logs to manage
@@ -311,7 +313,18 @@ class Handler(BaseHTTPRequestHandler):
             body = store.info(sid) if len(sid) == 32 else None
             if (not body or store.missing(body)) and len(sid) == 32 and self.server.session is not None:
                 from . import net
-                status, body = net.fetch(home, sid, wait=15, hint=addr or None, session=self.server.session)
+                if self.server.fetch_slots.acquire(blocking=False):
+                    try:
+                        status, body = net.fetch(home, sid, wait=15, hint=addr or None, session=self.server.session)
+                    finally:
+                        self.server.fetch_slots.release()
+                else:
+                    # Too many on-demand fetches in flight already: each one can block a thread for up to
+                    # 15s, and ThreadingHTTPServer makes one thread per request with no cap of its own -
+                    # without this, a burst of requests for distinct unknown site ids could pile up
+                    # unboundedly. Fail fast instead of adding to the pile.
+                    self._html("Busy", "<h1>Busy</h1><p>Too many lookups in progress; try again shortly.</p>", 503)
+                    return
             body = store.info(sid)
             if not body or store.is_private(sid):
                 self._html("Not found", "<h1>Not found</h1>"
@@ -354,6 +367,7 @@ def serve(home, port=4280, bind="127.0.0.1", relay_hint=None, with_network=True)
     srv = _Server((bind, port), Handler)
     srv.store, srv.home, srv.relay_hint = home.store(), home, relay_hint
     srv.session = None
+    srv.fetch_slots = threading.Semaphore(8)  # cap concurrent on-demand network fetches; see do_GET
     if with_network:
         try:
             from . import net
