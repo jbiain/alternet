@@ -177,6 +177,17 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass  # keep it quiet; this is a local convenience, not a service with logs to manage
 
+    def do_HEAD(self):
+        # Without this, http.server's default falls back to a generic 501 for any HEAD request - some
+        # crawlers, validators and uptime checks send HEAD before GET, and a sitemap/page that 501s on
+        # HEAD looks broken even though GET works fine. Run do_GET but skip only the body (not the header
+        # flush, which also goes through wfile - patching wfile.write wholesale breaks the response).
+        self._head_only = True
+        try:
+            self.do_GET()
+        finally:
+            self._head_only = False
+
     def _send(self, body, code=200, ctype="text/html; charset=utf-8"):
         data = body if isinstance(body, bytes) else body.encode("utf-8")
         self.send_response(code)
@@ -184,7 +195,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(data)
+        if not getattr(self, "_head_only", False):
+            self.wfile.write(data)
 
     def _base(self):
         """http:// or https://host - honors X-Forwarded-Proto from a reverse proxy (e.g. Caddy terminating
