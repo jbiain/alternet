@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alternet"
+version = "0.1.0"
+description = "Alternet Core 0.1: signed, content-addressed text sites replicated between nodes"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["rns>=1.5"]
+
+[project.optional-dependencies]
+fast-crypto = ["cryptography>=3.4"]
+
+[project.scripts]
+alternet = "alternet.cli:main"
+
+[tool.setuptools]
+packages = ["alternet"]
