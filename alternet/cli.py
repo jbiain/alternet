@@ -237,7 +237,7 @@ def cmd_pin(a, home):
 def cmd_bbs(a, home):
     home.require()
     from . import tui
-    mode = "plain" if a.plain else ("raw" if a.raw else None)
+    mode = "plain" if a.plain else ("raw" if a.raw else ("fancy" if getattr(a, "fancy", False) else None))
     tui.run(home, a.site, mode=mode)
 
 
@@ -263,7 +263,7 @@ def cmd_start(a, home):
         names["home"] = a.site or LANDING_SITE
         home.save_names(names)
     print("Joining the network through %s ..." % relay)
-    tui.run(home, "home", mode=("plain" if a.plain else None))
+    tui.run(home, "home", mode=("plain" if a.plain else ("fancy" if a.fancy else None)))
 
 
 def cmd_tour(a, home):
@@ -437,11 +437,13 @@ def build_parser():
     add("bbs", cmd_bbs, "browse a site as a BBS-style menu (arrow keys where available, numbers always; b=back, q=quit)",
         [(["site"], dict(help="site id, petname, or SITE@NODEADDRESS")),
          (["--plain"], dict(action="store_true", help="use the plain print/input menu, no live keys")),
-         (["--raw"], dict(action="store_true", help="force the termios/ANSI live-key renderer (used on a-Shell/iOS)"))])
+         (["--raw"], dict(action="store_true", help="force the termios/ANSI live-key renderer (used on a-Shell/iOS)")),
+         (["--fancy"], dict(action="store_true", help="force the truecolor game-style screen (auto on truecolor terminals)"))])
     add("start", cmd_start, "set up if needed, join the network, and open the landing BBS (the easiest way in)", [
         (["--relay"], dict(help="HOST:PORT of a relay to join (default: the public one)")),
         (["--site"], dict(help="SITE@NODEADDRESS to use as your home page instead of the default")),
-        (["--plain"], dict(action="store_true"))])
+        (["--plain"], dict(action="store_true")),
+        (["--fancy"], dict(action="store_true", help="force the truecolor game-style screen"))])
     add("tour", cmd_tour, "a narrated demo: publish, replicate, reject tampering, survive the publisher going offline",
         [(["--fast"], dict(action="store_true", help="no pauses"))])
     add("gateway", cmd_gateway, "serve Alternet sites to an ordinary web browser (read-only; fetches any "

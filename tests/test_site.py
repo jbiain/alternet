@@ -266,3 +266,48 @@ class TourTests(unittest.TestCase):
             rc = tour.run(fast=True)
         self.assertEqual(rc, 0)
         self.assertIn("REJECTED", buf.getvalue())
+
+
+class FancyBBSTests(unittest.TestCase):
+    def test_fancy_runs_in_a_real_pty_with_address_bar(self):
+        import pty, select, tempfile, time
+        from alternet.home import Home
+        with tempfile.TemporaryDirectory() as d:
+            h = Home(d)
+            h.save_settings({"auto": False, "listen": [], "connect": [], "relay": False, "standalone": True, "trusted": []})
+            key = crypto.SigningKey.load_or_create(h.key_file)
+            site = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "examples", "bbs-menu")
+            m, blocks = sl.pack(site, key, "bbs", 1)
+            for bh, blk in blocks.items():
+                h.store().put_block(bh, blk)
+            h.store().put_manifest(m)
+            sid = m["body"]["site"]
+            pid, fd = pty.fork()
+            if pid == 0:
+                os.environ["COLORTERM"] = "truecolor"; os.environ["TERM"] = "xterm-256color"
+                os.execv(sys.executable, [sys.executable, "-m", "alternet", "--home", d, "bbs", sid, "--fancy"])
+            seen = b""
+
+            def pump(t=0.6):
+                nonlocal seen
+                end = time.time() + t
+                while time.time() < end:
+                    r, _, _ = select.select([fd], [], [], 0.1)
+                    if r:
+                        try: seen += os.read(fd, 65536)
+                        except OSError: return
+
+            pump(1.5)
+            os.write(fd, b"g"); pump()
+            os.write(fd, b"nosuchsite\r"); pump()
+            os.write(fd, b"2"); pump(1.0)
+            os.write(fd, b"b"); pump()
+            os.write(fd, b"q"); pump(0.8)
+            _, status = os.waitpid(pid, 0)
+            import re
+            text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", seen.decode("utf-8", "replace"))
+            self.assertEqual(os.WEXITSTATUS(status), 0)
+            self.assertIn("A L T E R N E T", text)
+            self.assertIn("address", text)
+            self.assertIn("unknown site", text)
+            self.assertIn("Installing Alternet", text)

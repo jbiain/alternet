@@ -45,12 +45,15 @@ class Nav:
         self.home = home
         self.store = home.store()
         self.history = []  # list of (sid, path, addr)
+        self.on_fetch = None  # optional callback(sid) fired just before a network fetch (for a loading display)
 
     def text(self, sid, path, addr):
         """Read a page, fetching it if missing. Returns (text, error)."""
         body = self.store.info(sid)
         if not body or path not in (body or {}).get("files", {}) or self.store.missing(body):
             from . import net
+            if self.on_fetch:
+                self.on_fetch(sid)
             status, body = net.fetch(self.home, sid, wait=15, hint=addr)
             if status != "ok" and not self.store.info(sid):
                 return None, "not found on the network (is a peer connected?)"
@@ -61,6 +64,21 @@ class Nav:
             return self.store.read(sid, path).decode("utf-8", "replace"), None
         except Exception as e:
             return None, str(e)
+
+    def goto(self, ref):
+        """Resolve something a person typed (petname, site id, SITE@NODE) to a history entry.
+        Returns (entry, None) or (None, error message)."""
+        from .cli import _split_ref, _expand
+        ref = ref.strip()
+        if not ref:
+            return None, "type a site id, a name, or SITE@NODEADDRESS"
+        site, addr = _split_ref(_expand(self.home, ref))
+        sid = self.store.resolve(site)
+        if not sid and len(site) == 32 and all(c in "0123456789abcdef" for c in site.lower()):
+            sid = site.lower()
+        if not sid:
+            return None, "unknown site %r" % ref
+        return (sid, "index.md", addr or None), None
 
     def follow(self, sid, target):
         """A target is another page in this site, or SITE/petname[@ADDR] for a different site."""
@@ -131,7 +149,7 @@ class CursesBrowser:
                     if row < h - 2:
                         scr.addstr(row, 2, line[: w - 4], attr)
                         row += 1
-            foot = "[up/down] move  [enter] open  [b] back  [q] quit"
+            foot = "[up/down] move  [enter] open  [g] go to address  [b] back  [q] quit"
             scr.addstr(h - 1, 2, foot[: w - 4])
             scr.refresh()
             k = scr.getch()
@@ -139,6 +157,17 @@ class CursesBrowser:
                 return "quit"
             if k in (ord("b"), curses.KEY_BACKSPACE, 127, 8):
                 return "back"
+            if k in (ord("g"), ord("/")):
+                scr.addstr(h - 2, 2, "go to: "[: w - 4])
+                curses.echo(); curses.curs_set(1)
+                try:
+                    typed = scr.getstr(h - 2, 9, 120).decode("utf-8", "ignore")
+                finally:
+                    curses.noecho(); curses.curs_set(0)
+                entry, msg = self.nav.goto(typed)
+                if entry:
+                    return entry
+                continue
             if items:
                 if k in (curses.KEY_DOWN, ord("j")):
                     sel = (sel + 1) % len(items)
@@ -168,15 +197,34 @@ class RawAnsiBrowser:
 
     def run(self, sid, addr):
         fd = sys.stdin.fileno()
-        old = termios.tcgetattr(fd)
+        old = self._cooked = termios.tcgetattr(fd)
         try:
             tty.setraw(fd)
             self.nav.run(sid, addr, self._page)
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
-    def _getkey(self):
+    def _prompt_address(self):
+        """Leave raw mode briefly to read one line the normal way, then return to raw mode."""
+        fd = sys.stdin.fileno()
+        raw = termios.tcgetattr(fd)
+        termios.tcsetattr(fd, termios.TCSADRAIN, self._cooked)
+        try:
+            sys.stdout.write(CLEAR + "Go to (site id, name, or SITE@NODEADDRESS; empty = cancel): ")
+            sys.stdout.flush()
+            return input().strip()
+        except EOFError:
+            return ""
+        finally:
+            tty.setraw(fd)
+            termios.tcsetattr(fd, termios.TCSADRAIN, raw)
+
+    def _getkey(self, timeout=None):
         import os, select
+        if timeout is not None:
+            r, _, _ = select.select([sys.stdin], [], [], timeout)
+            if not r:
+                return "tick"
         ch = os.read(sys.stdin.fileno(), 1)
         if ch == b"\x1b":
             r, _, _ = select.select([sys.stdin], [], [], 0.05)
@@ -221,7 +269,7 @@ class RawAnsiBrowser:
                     line = "  %d. %-20s %s" % (i + 1, label, desc)
                     out.append((REV + line + RESET) if i == sel else line)
             out.append("-" * w)
-            out.append("[up/down or j/k] move  [enter] open  [b] back  [q] quit")
+            out.append("[up/down or j/k] move  [enter] open  [g] go to address  [b] back  [q] quit")
             sys.stdout.write("\r\n".join(out) + "\r\n")
             sys.stdout.flush()
             k = self._getkey()
@@ -229,6 +277,11 @@ class RawAnsiBrowser:
                 return "quit"
             if k in ("b", "backspace"):
                 return "back"
+            if k in ("g", "/"):
+                entry, msg = self.nav.goto(self._prompt_address())
+                if entry:
+                    return entry
+                continue
             if items:
                 if k in ("down", "j"):
                     sel = (sel + 1) % len(items)
@@ -293,14 +346,174 @@ class PlainBrowser:
         out.append(self._rule())
         print("\n".join(out))
         while True:
-            choice = input("[number]=open  [b]=back  [q]=quit > ").strip().lower()
+            choice = input("[number]=open  [b]=back  [q]=quit  or type an address > ").strip().lower()
             if choice == "q":
                 return "quit"
             if choice == "b":
                 return "back"
             if choice.isdigit() and items and 1 <= int(choice) <= len(items):
                 return self.nav.follow(sid, items[int(choice) - 1][1])
+            if choice and choice not in ("q", "b") and not choice.isdigit():
+                entry, msg = self.nav.goto(choice)
+                if entry:
+                    return entry
+                print(msg)
+                continue
             print("not a valid choice")
+
+
+# ---- fancy renderer: truecolor "terminal game" screen. Same navigation, plus an address bar and a status
+# line. Needs raw tty + a truecolor terminal (COLORTERM=truecolor), otherwise run() falls back automatically.
+
+def _rgb(r, g, b, bg=False):
+    return "\033[%d;2;%d;%d;%dm" % (48 if bg else 38, r, g, b)
+
+
+def _lerp(a, b, t):
+    return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
+
+
+CYAN, MAGENTA, GOLD = (60, 220, 255), (220, 80, 255), (255, 200, 80)
+
+
+def _gradient(text, c1=CYAN, c2=MAGENTA):
+    n = max(len(text) - 1, 1)
+    return "".join(_rgb(*_lerp(c1, c2, i / n)) + ch for i, ch in enumerate(text)) + RESET
+
+
+def _stars(w, tick, row):
+    out = []
+    for x in range(w):
+        v = (x * 7919 + row * 104729 + (tick // 2) * 1299709) % 41
+        out.append(DIM + _rgb(150, 170, 255) + "·" + RESET if v == 0 else
+                   _rgb(255, 255, 255) + "✦" + RESET if v == 1 and tick % 2 else " ")
+    return "".join(out)
+
+
+def _vlen(s):
+    return len(re.sub(r"\033\[[0-9;?]*[A-Za-z]", "", s))
+
+
+def fancy_frame(sid, path, items, lines, sel, edit, status, tick, w, h):
+    """Build one screen as a list of strings (pure function, so it can be tested without a terminal)."""
+    out = [_stars(w, tick, 0),
+           " " * ((w - 21) // 2) + BOLD + _gradient("◆  A L T E R N E T  ◆") + RESET,
+           _stars(w, tick, 1)]
+    label = "address" if edit is None else "address (Enter=go, Esc=cancel)"
+    inner = w - 4
+    out.append(_rgb(*CYAN) + "╭─ " + label + " " + "─" * max(0, w - 5 - len(label)) + "╮" + RESET)
+    if edit is None:
+        loc = "%s / %s" % (sid[:12], path)
+        hint = "   press g to type an address"
+        body = DIM + (loc + hint)[:inner] + RESET
+    else:
+        body = _rgb(*GOLD) + edit[-(inner - 1):] + RESET + REV + " " + RESET
+    pad = max(0, inner - _vlen(body))
+    out.append(_rgb(*CYAN) + "│ " + RESET + body + " " * pad + _rgb(*CYAN) + " │" + RESET)
+    out.append(_rgb(*CYAN) + "╰" + "─" * (w - 2) + "╯" + RESET)
+    reserved = 2                       # status line + key hint always stay on screen
+    free = max(0, h - len(out) - reserved)
+    n_items = min(len(items), max(1, free - 1)) if items else 0
+    room = free - (n_items + 1 if items else 0)
+    shown = 0
+    for ln in lines:
+        for wrapped in (textwrap.wrap(ln, w - 2) or [""]):
+            if shown >= room:
+                break
+            if wrapped.lstrip().startswith("#"):
+                wrapped = BOLD + _gradient(wrapped.lstrip("# ").strip(), GOLD, CYAN)
+            out.append(" " + wrapped)
+            shown += 1
+    if items:
+        out.append("")
+        first = max(0, min(sel - n_items + 1, len(items) - n_items)) if sel >= n_items else 0
+        for i in range(first, first + n_items):
+            name, target, desc = items[i]
+            text = " %s %d  %-18s %s" % ("▸" if i == sel else " ", i + 1, name, desc)
+            text = text[: w - 1].ljust(w - 1)
+            out.append((_rgb(25, 45, 95, bg=True) + _rgb(255, 255, 255) + BOLD + text + RESET) if i == sel
+                       else (DIM + text + RESET))
+    while len(out) < h - 2:
+        out.append("")
+    out.append(_rgb(120, 255, 160) + " ● " + RESET + DIM + status[: w - 4] + RESET)
+    out.append(DIM + " [arrows/jk] move  [enter] open  [g] address  [b] back  [q] quit"[:w] + RESET)
+    return out[:h]
+
+
+class FancyBrowser(RawAnsiBrowser):
+    def run(self, sid, addr):
+        fd = sys.stdin.fileno()
+        self._cooked = termios.tcgetattr(fd)
+        self.sites = len(self.nav.store.sites())
+        conn = self.nav.home.settings().get("connect") or []
+        self.relay = conn[0] if conn else "no relay (local only)"
+        self.nav.on_fetch = self._loading
+        sys.stdout.write("\033[?1049h\033[?25l" + CLEAR)
+        try:
+            tty.setraw(fd)
+            self.nav.run(sid, addr, self._page)
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, self._cooked)
+            sys.stdout.write("\033[?25h\033[?1049l")
+            sys.stdout.flush()
+
+    def _size(self):
+        w, h = shutil.get_terminal_size(fallback=(80, 24))
+        return max(50, min(w, 110)), max(14, h)
+
+    def _draw(self, frame):
+        sys.stdout.write("\033[H" + "\r\n".join(ln + "\033[K" for ln in frame))
+        sys.stdout.flush()
+
+    def _loading(self, sid):
+        w, h = self._size()
+        msg = "fetching %s... and verifying every signature and block" % sid[:12]
+        self._draw(fancy_frame(sid, "...", [], ["", msg], 0, None, "joining the network via " + self.relay, 0, w, h))
+
+    def _status(self):
+        return "online via %s | %d site(s) stored | every page is signature-checked" % (self.relay, self.sites)
+
+    def _page(self, sid, path, text, err):
+        items, lines = ([], ["(%s)" % err]) if err else _parse(text)
+        sel, tick, edit, flash = 0, 0, None, None
+        while True:
+            w, h = self._size()
+            self._draw(fancy_frame(sid, path, items, lines, sel, edit, flash or self._status(), tick, w, h))
+            k = self._getkey(timeout=0.5)
+            if k == "tick":
+                tick += 1
+                continue
+            flash = None
+            if edit is not None:
+                if k in ("esc", "quit"):
+                    edit = None
+                elif k == "enter":
+                    entry, flash = self.nav.goto(edit)
+                    edit = None
+                    if entry:
+                        return entry
+                elif k == "backspace":
+                    edit = edit[:-1]
+                elif k == "\x15":
+                    edit = ""
+                elif k and len(k) == 1 and k.isprintable():
+                    edit += k
+                continue
+            if k in ("q", "quit"):
+                return "quit"
+            if k in ("b", "backspace"):
+                return "back"
+            if k in ("g", "/"):
+                edit = ""
+            elif items:
+                if k in ("down", "j"):
+                    sel = (sel + 1) % len(items)
+                elif k in ("up", "k"):
+                    sel = (sel - 1) % len(items)
+                elif k and k.isdigit() and 1 <= int(k) <= len(items):
+                    return self.nav.follow(sid, items[int(k) - 1][1])
+                elif k == "enter":
+                    return self.nav.follow(sid, items[sel][1])
 
 
 def run(home, ref, force_plain=False, mode=None):
@@ -317,8 +530,15 @@ def run(home, ref, force_plain=False, mode=None):
     if force_plain:
         mode = "plain"
     if mode is None:
+        import os as _os
+        truecolor = _os.environ.get("COLORTERM", "").lower() in ("truecolor", "24bit")
+        if HAVE_RAWTTY and truecolor and sys.stdin.isatty() and sys.stdout.isatty():
+            mode = "fancy"
+    if mode is None:
         mode = "curses" if HAVE_CURSES else ("raw" if (HAVE_RAWTTY and sys.stdin.isatty()) else "plain")
-    if mode == "curses" and HAVE_CURSES:
+    if mode == "fancy" and HAVE_RAWTTY:
+        FancyBrowser(nav).run(sid, addr)
+    elif mode == "curses" and HAVE_CURSES:
         curses.wrapper(lambda scr: CursesBrowser(nav, scr).run(sid, addr))
     elif mode == "raw" and HAVE_RAWTTY:
         RawAnsiBrowser(nav).run(sid, addr)
