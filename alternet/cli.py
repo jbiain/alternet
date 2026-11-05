@@ -92,6 +92,13 @@ def cmd_init(a, home):
 def cmd_publish(a, home):
     home.require()
     store, key = home.store(), home.key()
+    from . import appspec
+    try:
+        spec = appspec.check_site_dir(a.directory)
+    except ValueError as e:
+        die(str(e))
+    if spec:
+        print("\n".join(appspec.describe(spec)))
     sid = sitelib.site_id(key.public_bytes(), a.name)
     old = store.info(sid)
     version = a.version or ((old["version"] + 1) if old else 1)

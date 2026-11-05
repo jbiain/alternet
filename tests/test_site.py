@@ -605,3 +605,39 @@ class RelayListTests(unittest.TestCase):
             st.put_block(bh, data)
         sid = sitelib.verify_manifest(m)["site"]
         self.assertEqual(cli.relay_list(h, sid), ["a.example:4242", "b.example:4243"])
+
+
+class AppSpecTests(unittest.TestCase):
+    GOOD = {"app": 1, "title": "Codex", "run": ["codex", "--x"], "runtime": "native",
+            "needs": {"secrets": ["OPENAI_API_KEY"], "net": ["api.openai.com", ".openai.com"], "storage_mb": 50, "seconds": 3600}}
+
+    def test_valid(self):
+        from alternet import appspec
+        s = appspec.validate(self.GOOD)
+        self.assertEqual(s["needs"]["secrets"], ["OPENAI_API_KEY"])
+        self.assertEqual(appspec.validate({"app": 1, "title": "t", "run": ["x"]})["needs"]["net"], [])   # defaults: no net
+        self.assertIn("OPENAI_API_KEY", "\n".join(appspec.describe(s)))
+
+    def test_rejects_bad(self):
+        import copy
+        from alternet import appspec
+        def bad(**kw):
+            d = copy.deepcopy(self.GOOD); d.update(kw)
+            with self.assertRaises(ValueError, msg=str(kw)):
+                appspec.validate(d)
+        bad(app=2); bad(title=""); bad(run=[]); bad(run=["/bin/sh"]); bad(run=["../x"]); bad(runtime="ruby")
+        bad(extra=1); bad(needs={"root": True}); bad(needs={"net": ["127.0.0.1"]}); bad(needs={"net": ["*.x.com"]})
+        bad(needs={"secrets": ["bad name"]}); bad(needs={"seconds": 1}); bad(needs={"storage_mb": -1})
+        with self.assertRaises(ValueError):
+            appspec.validate("not json")
+
+    def test_publish_checks_run_path(self):
+        import json, tempfile
+        from alternet import appspec
+        d = tempfile.mkdtemp()
+        self.assertIsNone(appspec.check_site_dir(d))
+        json.dump(dict(self.GOOD, run=["bin/app"]), open(os.path.join(d, "app.json"), "w"))
+        with self.assertRaises(ValueError):
+            appspec.check_site_dir(d)
+        os.makedirs(os.path.join(d, "bin")); open(os.path.join(d, "bin", "app"), "w").write("x")
+        self.assertEqual(appspec.check_site_dir(d)["run"], ["bin/app"])
