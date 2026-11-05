@@ -439,7 +439,7 @@ def fancy_frame(sid, path, items, lines, sel, edit, status, tick, w, h):
     while len(out) < h - 2:
         out.append("")
     out.append(_rgb(120, 255, 160) + " ● " + RESET + DIM + status[: w - 4] + RESET)
-    out.append(DIM + " [arrows/jk] move  [enter] open  [g] address  [b] back  [q] quit"[:w] + RESET)
+    out.append(DIM + " [arrows/jk] move  [enter] open  [g] address  [w] 3D walk  [b] back  [q] quit"[:w] + RESET)
     return out[:h]
 
 
@@ -512,6 +512,16 @@ class FancyBrowser(RawAnsiBrowser):
                 return "quit"
             if k in ("b", "backspace"):
                 return "back"
+            if k == "w":
+                from . import world
+                ref = world.play(world.World(world.doors_for(self.nav.home) or [("this site", sid)]),
+                                 self._getkey, lambda t: (sys.stdout.write(t), sys.stdout.flush()), self._size)
+                sys.stdout.write(CLEAR)
+                if ref:
+                    entry, flash = self.nav.goto(ref)
+                    if entry:
+                        return entry
+                continue
             if k in ("g", "/") or (k == "up" and sel == 0):
                 edit = ""
             elif items:

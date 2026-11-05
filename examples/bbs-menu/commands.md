@@ -18,3 +18,9 @@
     name        local petnames for sites: name add NAME SITE[@ADDR] | rm NAME | list
     address     show your node address (for SITE@ADDRESS references)
     id          show your owner public key
+
+## Fastest ways in
+- `alternet start`  - set up, join the network, open the landing BBS (address bar first)
+- `alternet tour`   - a one-minute demo: sign, replicate, reject tampering, survive the publisher going offline
+- `alternet world`  - walk a first-person 3D view of the network; sites are doors (truecolor terminal)
+- `alternet view <png-file | site> [page]` - show a PNG in the terminal

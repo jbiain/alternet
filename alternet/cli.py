@@ -266,6 +266,38 @@ def cmd_start(a, home):
     tui.run(home, "home", mode=("plain" if a.plain else ("fancy" if a.fancy else None)))
 
 
+def cmd_world(a, home):
+    home.require()
+    from . import world, tui
+    ref = world.run_standalone(home)
+    if ref:
+        tui.run(home, ref)
+
+
+def cmd_view(a, home):
+    """Show a PNG (a file, or a page of a site) in the terminal using truecolor half-blocks."""
+    from . import gfx
+    import shutil
+    if os.path.exists(a.source):
+        with open(a.source, "rb") as f:
+            data = f.read()
+    else:
+        home.require()
+        if not a.page:
+            die("give a page name, e.g.: alternet view SITE picture.png")
+        site, _ = _split_ref(_expand(home, a.source))
+        store = home.store()
+        sid = store.resolve(site) or site
+        if not store.info(sid):
+            die("site %r is not stored here; read it first" % a.source)
+        data = store.read(sid, a.page)
+    cols, rows = shutil.get_terminal_size(fallback=(80, 24))
+    try:
+        print("\n".join(gfx.render_png(data, cols, rows - 2)))
+    except ValueError as e:
+        die("cannot show image: %s" % e)
+
+
 def cmd_tour(a, home):
     from . import tour
     sys.exit(tour.run(fast=a.fast))
@@ -444,6 +476,10 @@ def build_parser():
         (["--site"], dict(help="SITE@NODEADDRESS to use as your home page instead of the default")),
         (["--plain"], dict(action="store_true")),
         (["--fancy"], dict(action="store_true", help="force the truecolor game-style screen"))])
+    add("world", cmd_world, "walk a first-person 3D view of the network: your sites are doors (truecolor terminal)", [])
+    add("view", cmd_view, "show a PNG (a file, or a page of a stored site) in the terminal", [
+        (["source"], dict(help="a PNG file, or a site id/name")),
+        (["page"], dict(nargs="?", help="page name inside the site"))])
     add("tour", cmd_tour, "a narrated demo: publish, replicate, reject tampering, survive the publisher going offline",
         [(["--fast"], dict(action="store_true", help="no pauses"))])
     add("gateway", cmd_gateway, "serve Alternet sites to an ordinary web browser (read-only; fetches any "

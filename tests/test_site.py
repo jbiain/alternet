@@ -311,3 +311,84 @@ class FancyBBSTests(unittest.TestCase):
             self.assertIn("address", text)
             self.assertIn("unknown site", text)
             self.assertIn("Installing Alternet", text)
+
+
+class GfxTests(unittest.TestCase):
+    @staticmethod
+    def _png(w, h, pixel):
+        import struct, zlib
+        raw = b"".join(b"\x00" + b"".join(bytes(pixel(x, y)) for x in range(w)) for y in range(h))
+        def chunk(k, d):
+            return struct.pack(">I", len(d)) + k + d + struct.pack(">I", zlib.crc32(k + d))
+        return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+                + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+    def test_png_decodes_and_renders_halfblocks(self):
+        from alternet import gfx
+        data = self._png(4, 4, lambda x, y: (255, 0, 0) if y < 2 else (0, 0, 255))
+        w, h, rows = gfx.decode_png(data)
+        self.assertEqual((w, h), (4, 4))
+        self.assertEqual(rows[0][0], (255, 0, 0))
+        self.assertEqual(rows[3][3], (0, 0, 255))
+        lines = gfx.render_png(data, 10, 10)          # small images are scaled up to fill the box
+        self.assertEqual(len(lines), 5)
+        self.assertIn("▀", lines[0])
+
+    def test_garbage_is_rejected(self):
+        from alternet import gfx
+        with self.assertRaises(ValueError):
+            gfx.decode_png(b"not a png at all")
+
+    def test_world_walls_block_and_doors_are_found(self):
+        from alternet import world
+        w = world.World([("one", "a" * 32), ("two", "b" * 32)])
+        for _ in range(40):
+            w.step(world.MOVE)                     # facing up from the start: must stop at the wall
+        self.assertGreater(w.y, 1.0)
+        self.assertEqual(w.cell(int(w.x), int(w.y)), ".")
+        w.x, w.y, w.a = 1.5, 1.5, -3.14159 / 2     # just below door '1' on the top wall
+        self.assertEqual(w.facing_door(), 0)
+        frame = w.frame(60, 12)
+        self.assertEqual(len(frame), 14)
+        self.assertIn("one", frame[-2])
+
+    def test_world_play_returns_the_chosen_door(self):
+        from alternet import world
+        w = world.World([("one", "a" * 32)])
+        w.x, w.y, w.a = 1.5, 1.5, -3.14159 / 2
+        keys = iter(["left", "right", "enter"])
+        out = []
+        ref = world.play(w, lambda t: next(keys), out.append, lambda: (60, 20))
+        self.assertEqual(ref, "a" * 32)
+
+
+class WorldPtyTests(unittest.TestCase):
+    def test_world_command_runs_and_quits_in_a_pty(self):
+        import pty, select, time, tempfile
+        from alternet.home import Home
+        with tempfile.TemporaryDirectory() as d:
+            h = Home(d)
+            h.save_settings({"auto": False, "listen": [], "connect": [], "relay": False, "standalone": True, "trusted": []})
+            names = {"home": "a" * 32}
+            h.save_names(names)
+            pid, fd = pty.fork()
+            if pid == 0:
+                os.environ["COLORTERM"] = "truecolor"; os.environ["TERM"] = "xterm-256color"
+                os.execv(sys.executable, [sys.executable, "-m", "alternet", "--home", d, "world"])
+            seen, end = b"", time.time() + 1.5
+            while time.time() < end:
+                r, _, _ = select.select([fd], [], [], 0.1)
+                if r:
+                    seen += os.read(fd, 65536)
+            os.write(fd, b"\x1b[A"); time.sleep(0.4)
+            os.write(fd, b"q")
+            end = time.time() + 1.0
+            while time.time() < end:
+                r, _, _ = select.select([fd], [], [], 0.1)
+                if r:
+                    try: seen += os.read(fd, 65536)
+                    except OSError: break
+            _, status = os.waitpid(pid, 0)
+            self.assertEqual(os.WEXITSTATUS(status), 0)
+            self.assertIn("▀".encode(), seen)
+            self.assertIn(b"walk up to a glowing door", seen)
