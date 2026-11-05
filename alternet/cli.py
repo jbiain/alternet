@@ -125,7 +125,29 @@ def cmd_sites(a, home):
     for sid in store.sites():
         b = store.info(sid)
         flags = ("mine " if b["owner"] == me else "") + ("pinned " if sid in pins else "") + ("private" if b.get("access") == "private" else "")
+        flags += "offline-ok " if store.complete(sid) else "PARTIAL "
         print("%s  %-26s v%-3d %2d pages  %s" % (sid, sitelib.display_name(b), b["version"], len(b["files"]), flags.strip()))
+
+
+def cmd_gc(a, home):
+    """Keep the local store under a size limit by dropping the least recently used sites that are not
+    yours and not pinned. Pinned and owned sites are never touched."""
+    home.require()
+    store, pins = home.store(), [p.partition("@")[0] for p in home.pins()]
+    me = home.key().public_bytes().hex()
+    limit = int((a.limit if a.limit is not None else home.settings().get("store_limit_mb", 500)) * 1024 * 1024)
+    sizes = {sid: store.site_bytes(sid) for sid in store.sites()}
+    total = sum(sizes.values())
+    print("store: %.1f MB in %d site(s), limit %.0f MB" % (total / 1e6, len(sizes), limit / 1e6))
+    cands = sorted((sid for sid in sizes if sid not in pins and store.info(sid)["owner"] != me), key=store.last_used)
+    for sid in cands:
+        if total <= limit:
+            break
+        total -= sizes[sid]
+        store.remove_site(sid)
+        print("  dropped %s (%.1f MB)" % (sitelib.display_name(store.info(sid) or {"name": sid, "owner": ""}) if store.info(sid) else sid, sizes[sid] / 1e6))
+    if total > limit:
+        print("still over the limit: the rest is pinned or yours (unpin something or raise the limit)")
 
 
 def cmd_ls(a, home):
@@ -282,6 +304,42 @@ LANDING_RELAY = "y-0-x.com:4242"
 LANDING_SITE = "7436eed409230dfff50e14250166eb9b@4138c4b7f10518c1eadd60c1b91c76a5"
 
 
+def relay_list(home, site=None):
+    """Relays published in the landing site's relays.txt (read from the local copy; verified content only)."""
+    store = home.store()
+    sid = store.resolve((site or LANDING_SITE).partition("@")[0])
+    if not sid or "relays.txt" not in (store.info(sid) or {}).get("files", {}):
+        return []
+    try:
+        text = store.read(sid, "relays.txt").decode("utf-8", "replace")
+    except Exception:
+        return []
+    out = []
+    for ln in text.splitlines():
+        ln = ln.split("#", 1)[0].strip()
+        host, _, port = ln.rpartition(":")
+        if host and port.isdigit() and ln not in out:
+            out.append(ln)
+    return out[:8]
+
+
+def cmd_relays(a, home):
+    home.require()
+    found = relay_list(home)
+    have = home.settings().get("connect") or []
+    if not found:
+        print("(no relay list stored yet: run `alternet start` once to fetch the landing site)")
+    for r in found:
+        print("%-30s %s" % (r, "connected" if r in have else ""))
+    if a.add:
+        def f(s):
+            for r in found:
+                if r not in s["connect"]:
+                    s["connect"].append(r)
+        _setting(home, f)
+        print("Added all listed relays; restart your node to apply.")
+
+
 def cmd_start(a, home):
     """One command from nothing to the landing BBS: set up a home if needed, join the network, open the menu."""
     from . import tui
@@ -297,8 +355,31 @@ def cmd_start(a, home):
     if "home" not in names or a.site:
         names["home"] = a.site or LANDING_SITE
         home.save_names(names)
-    print("Joining the network through %s ..." % relay)
+    extra = [r for r in relay_list(home) if r != relay][:3]     # from the last time we fetched the landing site
+    if extra:
+        _setting(home, lambda s: [s["connect"].append(r) for r in extra if r not in s["connect"]])
+    print("Joining the network through %s ..." % ", ".join([relay] + extra))
     tui.run(home, "home", mode=("plain" if a.plain else ("fancy" if a.fancy else None)))
+
+
+def cmd_app_serve(a, home):
+    from . import apphost
+    home.require()
+    argv = [x for x in a.command if x != "--"]
+    if argv:
+        apps = {a.name: apphost.App(a.name, argv, a.cwd, a.access, a.net, a.ro)}
+    else:
+        apps = apphost.load_apps(home)
+    try:
+        apphost.serve(home, apps, sandbox=not a.no_sandbox, max_sessions=a.max)
+    except ValueError as e:
+        die(str(e))
+
+
+def cmd_open(a, home):
+    from . import apphost
+    home.require()
+    apphost.connect(home, a.address)
 
 
 def cmd_world(a, home):
@@ -353,6 +434,34 @@ def cmd_node(a, home):
     home.require()
     from . import net
     net.run_node(home, interval=a.interval)
+
+
+def cmd_relay(a, home):
+    """One command to become a relay + mirror: forwards Alternet traffic only and keeps copies of sites."""
+    from . import net
+    if not home.exists():
+        home.init(auto=True)
+        print("Created your Alternet home at", home.path)
+    def f(s):
+        s["relay"] = True
+        if a.port not in s["listen"]:
+            s["listen"].append(a.port)
+        if a.join and a.join not in s["connect"]:
+            s["connect"].append(a.join)
+    _setting(home, f)
+    mirror = [LANDING_SITE] if not a.no_mirror else []
+    pins = home.pins()
+    for site in mirror:
+        if site.partition("@")[0] not in [p.partition("@")[0] for p in pins]:
+            pins.append(site)
+    home.save_pins(pins)
+    addr, peer = net.node_ids(home)
+    print("Relaying Alternet traffic only (no internet sharing, no access to your LAN).")
+    print("Listening on TCP port %d: forward it on your router so others can reach you." % a.port)
+    print("Others add you with:  alternet connect YOUR-HOST:%d" % a.port)
+    print("Mirroring: %s" % (", ".join(m.partition("@")[0][:12] for m in mirror) or "nothing (--no-mirror)"))
+    print("Node address:", addr)
+    net.run_node(home, interval=30)
 
 
 def _setting(home, fn):
@@ -511,6 +620,25 @@ def build_parser():
         (["--site"], dict(help="SITE@NODEADDRESS to use as your home page instead of the default")),
         (["--plain"], dict(action="store_true")),
         (["--fancy"], dict(action="store_true", help="force the truecolor game-style screen"))])
+    add("app-serve", cmd_app_serve, "serve sandboxed terminal apps at this node's app address (apps.json, or one command after --)", [
+        (["--name"], dict(default="app", help="name of the app when given on the command line")),
+        (["--cwd"], dict(help="app directory (mounted read-only inside the sandbox)")),
+        (["--access"], dict(choices=["public", "trusted"], default="public", help="who may connect (default public)")),
+        (["--net"], dict(action="store_true", help="let the app use the network")),
+        (["--ro"], dict(action="append", default=[], help="extra read-only path visible to the app (repeatable)")),
+        (["--no-sandbox"], dict(action="store_true", help="run apps unconfined (only on a machine you can afford to expose)")),
+        (["--max"], dict(type=int, default=4, help="most simultaneous sessions (default 4)")),
+        (["command"], dict(nargs=argparse.REMAINDER, help="-- COMMAND [ARGS...]"))])
+    add("open", cmd_open, "connect to a served terminal app by its address", [
+        (["address"], dict(help="ADDRESS or ADDRESS/APP, from app-serve"))])
+    add("gc", cmd_gc, "drop the least recently used unpinned sites until the store fits a size limit", [
+        (["--limit"], dict(type=float, help="limit in MB (default 500, or settings store_limit_mb)"))])
+    add("relay", cmd_relay, "become a relay and mirror: extend the network's reach and keep sites alive", [
+        (["--port"], dict(type=int, default=4242, help="TCP port to accept connections on (default 4242)")),
+        (["--join"], dict(help="HOST:PORT of another relay to connect to (default: none)")),
+        (["--no-mirror"], dict(action="store_true", help="do not pin the landing BBS"))])
+    add("relays", cmd_relays, "list the relays published by the landing site (--add connects to them all)", [
+        (["--add"], dict(action="store_true", help="connect to every listed relay"))])
     add("world", cmd_world, "walk a first-person 3D view of the network: your sites are doors (truecolor terminal)", [])
     add("view", cmd_view, "show a PNG (a file, or a page of a stored site) in the terminal", [
         (["source"], dict(help="a PNG file, or a site id/name")),

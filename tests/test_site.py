@@ -444,3 +444,164 @@ class NameTests(unittest.TestCase):
                 cli._expand(h, "hello")
             pins = h.name_pins(); pins.pop("hello"); h.save_name_pins(pins)               # what `name unpin` does
             self.assertEqual(cli._expand(h, "hello"), s2)
+
+
+class AppHostTests(unittest.TestCase):
+    def test_filter_keeps_safe_and_drops_dangerous(self):
+        from alternet.apphost import OutputFilter
+        f = OutputFilter()
+        safe = b"hi \x1b[1;31mred\x1b[0m \x1b[2J\x1b[H\x1b[?25l\x1b[?1049h\x1b(B"
+        self.assertEqual(f.feed(safe), safe)
+        for bad in (b"\x1b]52;c;aGVsbG8=\x07", b"\x1b]0;title\x1b\\", b"\x1b[6n", b"\x1b[c", b"\x1b[18t",
+                    b"\x1bPq#0\x1b\\", b"\x1b_Gf=100;AAAA\x1b\\", b"\x1b[?1049;9001h"):
+            self.assertEqual(OutputFilter().feed(b"a" + bad + b"b"), b"ab", bad)
+
+    def test_filter_handles_split_sequences(self):
+        from alternet.apphost import OutputFilter
+        f = OutputFilter()
+        out = f.feed(b"x\x1b]52;c;aGV") + f.feed(b"sbG8=\x07y\x1b[3") + f.feed(b"1mz\x1b[6") + f.feed(b"nq")
+        self.assertEqual(out, b"xy\x1b[31mzq")
+
+    def test_bwrap_argv_confines_and_defaults_offline(self):
+        from alternet.apphost import App, bwrap_argv
+        a = App("chat", ["python3", "app.py"], cwd="/opt/apps/chat")
+        argv = bwrap_argv(a, "/scratch/s1", {"TERM": "xterm"})
+        self.assertIn("--unshare-all", argv)
+        self.assertNotIn("--share-net", argv)
+        self.assertIn("--clearenv", argv)
+        i = argv.index("/app")
+        self.assertEqual(argv[i - 2], "--ro-bind")                 # app dir is read-only
+        self.assertEqual(argv[-2:], ["python3", "app.py"])
+        self.assertIn("--share-net", bwrap_argv(App("x", ["x"], net=True), "/s", {}))
+
+    def test_apps_config_and_access_flag(self):
+        import json, tempfile
+        from alternet.apphost import load_apps, App
+        from alternet.home import Home
+        h = Home(tempfile.mkdtemp())
+        os.makedirs(h.path, exist_ok=True)
+        json.dump({"apps": {"a": {"cmd": ["x"]}, "b": {"cmd": ["y"], "access": "trusted"}}},
+                  open(os.path.join(h.path, "apps.json"), "w"))
+        apps = load_apps(h)
+        self.assertEqual((apps["a"].access, apps["b"].access), ("public", "trusted"))
+        with self.assertRaises(ValueError):
+            App("z", ["x"], access="everyone")
+
+
+class NetProxyTests(unittest.TestCase):
+    def _connect(self, allow, target):
+        import socket, tempfile
+        from alternet.netproxy import AllowProxy
+        d = tempfile.mkdtemp()
+        p = AllowProxy(os.path.join(d, "p.sock"), allow)
+        try:
+            c = socket.socket(socket.AF_UNIX)
+            c.settimeout(10)
+            c.connect(os.path.join(d, "p.sock"))
+            c.sendall(("CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n" % (target, target)).encode())
+            return c.recv(200).split(b"\r\n")[0]
+        finally:
+            p.close()
+
+    def test_host_rules(self):
+        from alternet.netproxy import host_allowed
+        self.assertTrue(host_allowed("api.openai.com", ["api.openai.com"]))
+        self.assertTrue(host_allowed("auth.openai.com", [".openai.com"]))
+        self.assertFalse(host_allowed("evilopenai.com", [".openai.com"]))
+        self.assertFalse(host_allowed("openai.com.evil.net", ["openai.com"]))
+
+    def test_denies_unlisted_wrong_port_and_loopback(self):
+        self.assertIn(b"403", self._connect(["api.openai.com"], "example.com:443"))
+        self.assertIn(b"403", self._connect(["api.openai.com"], "api.openai.com:22"))
+        self.assertIn(b"403", self._connect(["localhost"], "localhost:443"))      # allowlisted but not public
+        self.assertIn(b"403", self._connect(["127.0.0.1"], "127.0.0.1:443"))
+
+    def test_bwrap_allowlist_mode_has_no_shared_net(self):
+        from alternet.apphost import App, bwrap_argv
+        argv = bwrap_argv(App("c", ["codex"], net=True, allow=["api.openai.com"]), "/s", {})
+        self.assertNotIn("--share-net", argv)
+        self.assertIn("HTTPS_PROXY", argv)
+
+
+class PageFmtTests(unittest.TestCase):
+    def test_safe_calc(self):
+        from alternet.pagefmt import evaluate
+        v = {"a": "4", "b": "2.5"}
+        self.assertEqual(evaluate("a * b + 1", v), 11.0)
+        self.assertEqual(evaluate("max(a, 10) / 4", v), 2.5)
+        self.assertIsNone(evaluate("__import__('os').system('x')", v))
+        self.assertIsNone(evaluate("a.__class__", v))
+        self.assertIsNone(evaluate("1/0", v))
+        self.assertIsNone(evaluate("9**9**9", v))
+
+    def test_blocks_and_render_with_image(self):
+        import tempfile
+        from alternet import pagefmt, site as sitelib, crypto
+        text = "# T\n![logo](logo.png)\n:input n \"N\"\n:calc d \"Double\" = n * 2\nplain"
+        bl = pagefmt.blocks(text.splitlines())
+        self.assertEqual([b[0] for b in bl], ["text", "image", "input", "calc", "text"])
+        self.assertEqual(pagefmt.fields(bl), [("input", "n")])
+        d = tempfile.mkdtemp()
+        src = os.path.join(d, "s"); os.makedirs(src)
+        import shutil
+        shutil.copy(os.path.join(os.path.dirname(__file__), "..", "examples", "bbs-menu", "logo.png"), src)
+        open(os.path.join(src, "index.md"), "w").write(text)
+        store = sitelib.Store(os.path.join(d, "store"))
+        key = crypto.SigningKey.load_or_create(os.path.join(d, "k"))
+        m, blocks = sitelib.pack(src, key, "t", 1)
+        store.put_manifest(m)
+        for h, data in blocks.items():
+            store.put_block(h, data)
+        sid = sitelib.verify_manifest(m)["site"]
+        out = pagefmt.render(bl, {"n": "21"}, None, store, sid, 80)
+        self.assertTrue(any("\x1b[38;2" in ln for ln in out))          # image drawn
+        self.assertTrue(any("Double" in ln and "42" in ln for ln in out))
+
+
+class StoreLimitTests(unittest.TestCase):
+    def test_gc_drops_unpinned_oldest_only(self):
+        import tempfile, time, subprocess
+        d = tempfile.mkdtemp()
+        env = dict(os.environ)
+        def run(*a):
+            return subprocess.run([sys.executable, "-m", "alternet", "--home", os.path.join(d, "h")] + list(a),
+                                  capture_output=True, text=True, env=dict(env, PYTHONPATH=os.path.join(os.path.dirname(__file__), "..")))
+        run("init", "--no-auto", "--standalone")
+        from alternet.home import Home
+        from alternet import site as sitelib, crypto
+        h = Home(os.path.join(d, "h")); st = h.store()
+        sids = []
+        for i in range(3):
+            src = os.path.join(d, "s%d" % i); os.makedirs(src)
+            open(os.path.join(src, "index.md"), "w").write("x" * 3000 + str(i))
+            key = crypto.SigningKey.load_or_create(os.path.join(d, "k%d" % i))      # someone else's site
+            m, blocks = sitelib.pack(src, key, "n%d" % i, 1)
+            st.put_manifest(m)
+            for bh, data in blocks.items():
+                st.put_block(bh, data)
+            sids.append(sitelib.verify_manifest(m)["site"])
+            os.utime(st._m(sids[-1]), (time.time() - 100 + i, time.time() - 100 + i))
+        self.assertTrue(all(st.complete(s) for s in sids))
+        h.save_pins([sids[0]])                                  # oldest, but pinned
+        r = run("gc", "--limit", "0.004")                       # room for about one site
+        left = h.store().sites()
+        self.assertIn(sids[0], left)                            # pinned: kept
+        self.assertNotIn(sids[1], left)                         # oldest unpinned: dropped
+        self.assertTrue(r.returncode == 0, r.stderr)
+
+
+class RelayListTests(unittest.TestCase):
+    def test_reads_relays_from_stored_landing_site(self):
+        import tempfile, shutil
+        from alternet import cli, site as sitelib, crypto
+        from alternet.home import Home
+        d = tempfile.mkdtemp(); h = Home(os.path.join(d, "h")); h.init(auto=False, standalone=True)
+        src = os.path.join(d, "s"); os.makedirs(src)
+        open(os.path.join(src, "index.md"), "w").write("x")
+        open(os.path.join(src, "relays.txt"), "w").write("# c\na.example:4242\nbad line\nb.example:4243 # hi\na.example:4242\n")
+        m, blocks = sitelib.pack(src, h.key(), "bbs", 1)
+        st = h.store(); st.put_manifest(m)
+        for bh, data in blocks.items():
+            st.put_block(bh, data)
+        sid = sitelib.verify_manifest(m)["site"]
+        self.assertEqual(cli.relay_list(h, sid), ["a.example:4242", "b.example:4243"])

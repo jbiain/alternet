@@ -426,6 +426,11 @@ def fancy_frame(sid, path, items, lines, sel, edit, status, tick, w, h):
     room = free - (n_items + 1 if items else 0)
     shown = 0
     for ln in lines:
+        if ln.startswith("\x00"):                      # pre-formatted (images, form fields): do not wrap or restyle
+            if shown < room:
+                out.append(ln[1:])
+                shown += 1
+            continue
         for wrapped in (textwrap.wrap(ln, w - 2) or [""]):
             if shown >= room:
                 break
@@ -485,17 +490,45 @@ class FancyBrowser(RawAnsiBrowser):
 
     def _page(self, sid, path, text, err):
         items, lines = ([], ["(%s)" % err]) if err else _parse(text)
+        from . import pagefmt
+        bl = pagefmt.blocks(lines)
+        fnames = pagefmt.fields(bl)
+        values, focus, imgcache = self.nav.home.form_values(sid), None, {}
         sel, tick, flash = 0, 0, None
         edit = "" if self._first else None   # the very first screen of a session: address bar has focus
         self._first = False
         while True:
             w, h = self._size()
-            self._draw(fancy_frame(sid, path, items, lines, sel, edit, flash or self._status(), tick, w, h))
+            shown = pagefmt.render(bl, values, focus, self.nav.store, sid, w, image_rows=max(4, min(12, h // 3)),
+                                   cache=imgcache)
+            if fnames and focus is None:
+                shown.append("\x00" + DIM + "  [f] edit the fields on this page" + RESET)
+            offline = " | stored here: works offline" if self.nav.store.complete(sid) else ""
+            self._draw(fancy_frame(sid, path, items, shown, sel, edit, flash or (self._status() + offline), tick, w, h))
             k = self._getkey(timeout=0.5)
             if k == "tick":
                 tick += 1
                 continue
             flash = None
+            if focus is not None:                       # editing a form field
+                kind, name = fnames[focus]
+                if k in ("esc", "enter", "quit"):
+                    focus = None
+                    self.nav.home.save_form_values(sid, values)
+                elif k in ("\t", "down"):
+                    focus = (focus + 1) % len(fnames)
+                elif k == "up":
+                    focus = (focus - 1) % len(fnames)
+                elif kind == "check" and k == " ":
+                    values[name] = "" if values.get(name) else "1"
+                elif kind == "input" and k == "backspace":
+                    values[name] = values.get(name, "")[:-1]
+                elif kind == "input" and k and len(k) == 1 and k.isprintable() and len(values.get(name, "")) < 40:
+                    values[name] = values.get(name, "") + k
+                continue
+            if k == "f" and edit is None and fnames:
+                focus = 0
+                continue
             if edit is not None:
                 if k in ("esc", "quit", "down"):
                     edit = None

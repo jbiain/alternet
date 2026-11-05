@@ -24,3 +24,10 @@
 - `alternet tour`   - a one-minute demo: sign, replicate, reject tampering, survive the publisher going offline
 - `alternet world`  - walk a first-person 3D view of the network; sites are doors (truecolor terminal)
 - `alternet view <png-file | site> [page]` - show a PNG in the terminal
+
+## Apps, forms and storage
+
+- `alternet app-serve` / `alternet open ADDRESS[/APP]`: host or use sandboxed terminal apps (see docs/013-security.md).
+- `alternet gc [--limit MB]`: keep your local store under a size limit; pinned and your own sites are never dropped.
+- `alternet sites` shows `offline-ok` for sites you hold completely (readable with no network) and `PARTIAL` otherwise.
+- Pages can contain images (`![alt](pic.png)`) and forms (`:input`, `:check`, `:calc`); see calc.md on the BBS.

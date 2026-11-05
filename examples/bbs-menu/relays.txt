@@ -1,0 +1,2 @@
+# one relay per line: HOST:PORT  (comments start with #)
+y-0-x.com:4242

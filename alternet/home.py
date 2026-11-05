@@ -94,6 +94,21 @@ class Home:
             json.dump(pins, f, indent=2, sort_keys=True)
 
     @property
+    def forms_file(self): return os.path.join(self.path, "form_values.json")
+
+    def form_values(self, sid):
+        """What you typed into a site's form fields: private to this machine, never sent anywhere."""
+        allv = _load(self.forms_file) if os.path.exists(self.forms_file) else {}
+        return dict(allv.get(sid, {}))
+
+    def save_form_values(self, sid, values):
+        allv = _load(self.forms_file) if os.path.exists(self.forms_file) else {}
+        allv[sid] = values
+        os.makedirs(self.path, exist_ok=True)
+        with open(self.forms_file, "w") as f:
+            json.dump(allv, f)
+
+    @property
     def directories_file(self): return os.path.join(self.path, "directories.json")
 
     def directories(self):

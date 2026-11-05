@@ -149,10 +149,46 @@ class Store:
     def missing(self, body):
         return [h for ids in body["files"].values() for h in ids if self.get_block(h) is None]
 
+    def complete(self, sid):
+        """True if every block of the site is stored here, i.e. it can be read with no network."""
+        body = self.info(sid)
+        return bool(body) and not self.missing(body)
+
+    def site_bytes(self, sid):
+        body = self.info(sid)
+        hs = {h for ids in body["files"].values() for h in ids} if body else set()
+        return sum(os.path.getsize(os.path.join(self.path, "blocks", h)) for h in hs
+                   if os.path.exists(os.path.join(self.path, "blocks", h)))
+
+    def last_used(self, sid):
+        return os.path.getmtime(self._m(sid))
+
+    def remove_site(self, sid):
+        """Delete a site's manifest and every block no other stored site still uses."""
+        body = self.info(sid)
+        if not body:
+            return 0
+        mine = {h for ids in body["files"].values() for h in ids}
+        os.remove(self._m(sid))
+        for other in self.sites():
+            ob = self.info(other)
+            mine -= {h for ids in ob["files"].values() for h in ids}
+        freed = 0
+        for h in mine:
+            p = os.path.join(self.path, "blocks", h)
+            if os.path.exists(p):
+                freed += os.path.getsize(p)
+                os.remove(p)
+        return freed
+
     def read(self, sid, path):
         body = self.info(sid)
         if not body or path not in body["files"]:
             raise KeyError(path)
+        try:
+            os.utime(self._m(sid))                 # "recently used": evicted last when the store is over its limit
+        except OSError:
+            pass
         parts = [self.get_block(h) for h in body["files"][path]]
         if any(p is None for p in parts):
             raise ValueError("site is not fully stored locally")
