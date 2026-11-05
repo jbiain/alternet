@@ -232,6 +232,17 @@ class RawAnsiBrowser:
                 ch2 = os.read(sys.stdin.fileno(), 1)
                 if ch2 == b"[":
                     ch3 = os.read(sys.stdin.fileno(), 1)
+                    if ch3 == b"<":                       # SGR mouse report: ESC [ < b ; x ; y (M|m)
+                        buf = b""
+                        while not buf.endswith((b"M", b"m")) and len(buf) < 20:
+                            buf += os.read(sys.stdin.fileno(), 1)
+                        try:
+                            b_, x_, y_ = buf[:-1].decode().split(";")
+                            if buf.endswith(b"M") and int(b_) == 0:
+                                return ("click", int(x_), int(y_))
+                        except ValueError:
+                            pass
+                        return None
                     return {"A": "up", "B": "down", "C": "right", "D": "left"}.get(ch3.decode("latin1"), None)
             return "esc"
         if ch in (b"\r", b"\n"):
@@ -465,6 +476,17 @@ class FancyBrowser(RawAnsiBrowser):
         w, h = shutil.get_terminal_size(fallback=(80, 24))
         return max(50, min(w, 110)), max(14, h)
 
+    tick_seconds = 0.5
+
+    def _paint(self, sid, path, items, lines, sel, edit, status, tick, w, h):
+        self._draw(fancy_frame(sid, path, items, lines, sel, edit, status, tick, w, h))
+
+    def _hit(self, x, y):
+        return None
+
+    def _clear_images(self):
+        return ""
+
     def _draw(self, frame):
         sys.stdout.write("\033[H" + "\r\n".join(ln + "\033[K" for ln in frame))
         sys.stdout.flush()
@@ -484,12 +506,22 @@ class FancyBrowser(RawAnsiBrowser):
         self._first = False
         while True:
             w, h = self._size()
-            self._draw(fancy_frame(sid, path, items, lines, sel, edit, flash or self._status(), tick, w, h))
-            k = self._getkey(timeout=0.5)
+            self._paint(sid, path, items, lines, sel, edit, flash or self._status(), tick, w, h)
+            k = self._getkey(timeout=self.tick_seconds)
             if k == "tick":
                 tick += 1
                 continue
             flash = None
+            if isinstance(k, tuple):                       # a mouse click -> the equivalent key press
+                act = self._hit(k[1], k[2])
+                if act is None:
+                    continue
+                if act[0] == "item":
+                    edit, sel, k = None, act[1], "enter"
+                else:
+                    edit, k = (None, {"back": "b", "world": "w"}[act[0]]) if act[0] != "addr" else ("", "g")
+                    if act[0] == "addr":
+                        continue
             if edit is not None:
                 if k in ("esc", "quit", "down"):
                     edit = None
@@ -516,7 +548,7 @@ class FancyBrowser(RawAnsiBrowser):
                 from . import world
                 ref = world.play(world.World(world.doors_for(self.nav.home) or [("this site", sid)]),
                                  self._getkey, lambda t: (sys.stdout.write(t), sys.stdout.flush()), self._size)
-                sys.stdout.write(CLEAR)
+                sys.stdout.write(self._clear_images() + CLEAR)
                 if ref:
                     entry, flash = self.nav.goto(ref)
                     if entry:
@@ -535,6 +567,132 @@ class FancyBrowser(RawAnsiBrowser):
                     return self.nav.follow(sid, items[sel][1])
 
 
+# ---- pixel renderer: draws the whole interface into a real pixel canvas (own font, gradients, buttons) and
+# shows it with an inline-image protocol, so it is not limited to the character grid. Falls back (in run())
+# to the character renderers when the terminal cannot display images.
+
+BG1, BG2 = (8, 10, 30), (34, 12, 52)
+PANEL, BAR, ACCENT, TEXT, DIMT = (12, 14, 36), (14, 18, 46), (60, 220, 255), (232, 236, 250), (130, 140, 175)
+SELBG, ITEMBG, GOLDC = (30, 62, 150), (22, 26, 60), (255, 200, 80)
+CELL_W, CELL_H = 8, 16
+
+
+def pixel_frame(sid, path, items, lines, sel, edit, status, W, H):
+    """Draw one screen. Returns (Canvas, hits) where hits = [(x0, y0, x1, y1, action)] for mouse clicks."""
+    from .canvas import Canvas, lerp
+    c, hits, m = Canvas(W, H), [], 16
+    c.vgradient(0, 0, W, H, BG1, BG2)
+    # top bar
+    c.rect(0, 0, W, 34, BAR); c.rect(0, 34, W, 2, ACCENT)
+    c.text(14, 10, "ALTERNET", ACCENT, 2, gradient_to=(220, 80, 255))
+    for label, act, bx in (("BACK", "back", W - 188), ("3D", "world", W - 90)):
+        bw = c.text_width(label) + 20
+        c.rect(bx, 5, bw, 24, SELBG); c.border(bx, 5, bw, 24, ACCENT)
+        c.text(bx + 10, 9, label, TEXT)
+        hits.append((bx, 5, bx + bw, 29, (act,)))
+    # address field
+    fx, fy, fw = m, 48, W - 2 * m
+    c.rect(fx, fy, fw, 34, (8, 10, 26))
+    c.border(fx, fy, fw, 34, GOLDC if edit is not None else (70, 95, 150), 2)
+    maxc = (fw - 24) // 12
+    if edit is None:
+        c.text(fx + 12, fy + 9, ("%s / %s" % (sid[:12], path))[:maxc], TEXT)
+        hint = "  click or press g to type an address"
+        room = maxc - len(sid[:12]) - len(path) - 3
+        if room > 10:
+            c.text(fx + 12 + c.text_width("%s / %s" % (sid[:12], path)), fy + 9, hint[:room], DIMT)
+    else:
+        shown = edit[-(maxc - 1):]
+        x = c.text(fx + 12, fy + 9, shown, GOLDC)
+        c.rect(x + 1, fy + 8, 10, 18, GOLDC)
+        if not edit:
+            c.text(x + 18, fy + 9, "type a site id or name, Enter to go, Down for the menu"[: maxc - 3], DIMT)
+    hits.append((fx, fy, fx + fw, fy + 34, ("addr",)))
+    # page window
+    wx, wy, ww = m, 96, W - 2 * m
+    wh = H - wy - 44
+    c.rect(wx, wy, ww, wh, PANEL); c.border(wx, wy, ww, wh, (70, 95, 150), 2)
+    c.vgradient(wx + 2, wy + 2, ww - 4, 24, (40, 70, 170), (28, 24, 90))
+    c.text(wx + 12, wy + 6, ("%s" % path)[: (ww - 24) // 12], TEXT)
+    ix, iw, ih = wx + 14, ww - 28, 30
+    n_items = min(len(items), max(1, (wh - 120) // (ih + 6))) if items else 0
+    menu_h = n_items * (ih + 6)
+    ty, tmax = wy + 36, wy + wh - menu_h - 12
+    per_line = max(10, (ww - 28) // 12)
+    for ln in lines:
+        for wrapped in (textwrap.wrap(ln, per_line) or [""]):
+            if ty + 18 > tmax:
+                break
+            head = wrapped.lstrip().startswith("#")
+            c.text(ix, ty, wrapped.lstrip("# ").strip() if head else wrapped, GOLDC if head else TEXT)
+            ty += 20 if head else 18
+    first = max(0, min(sel - n_items + 1, len(items) - n_items)) if items and sel >= n_items else 0
+    iy = wy + wh - menu_h - 6
+    for i in range(first, first + n_items):
+        name, target, desc = items[i]
+        on = i == sel
+        c.rect(ix, iy, iw, ih, SELBG if on else ITEMBG)
+        c.border(ix, iy, iw, ih, ACCENT if on else (46, 54, 110), 1)
+        if on:
+            c.rect(ix, iy, 6, ih, GOLDC)
+        c.text(ix + 16, iy + 7, "%d" % (i + 1), GOLDC if on else DIMT)
+        x = c.text(ix + 46, iy + 7, name[:24], TEXT)
+        c.text(ix + 46 + 24 * 12 + 12, iy + 7, desc[: max(0, (iw - 46 - 24 * 12 - 24) // 12)], (190, 200, 230) if on else DIMT)
+        hits.append((ix, iy, ix + iw, iy + ih, ("item", i)))
+        iy += ih + 6
+    # status bar
+    c.rect(0, H - 34, W, 34, BAR); c.rect(0, H - 36, W, 2, ACCENT)
+    c.rect(14, H - 22, 10, 10, (120, 255, 160))
+    c.text(34, H - 25, status[: (W - 48) // 12], DIMT)
+    return c, hits
+
+
+class PixelBrowser(FancyBrowser):
+    tick_seconds = None
+
+    def __init__(self, nav, protocol):
+        super().__init__(nav)
+        self.protocol = protocol
+        self._hits, self._dims = [], (1, 1, 1, 1)
+
+    def _size(self):
+        w, h = shutil.get_terminal_size(fallback=(100, 30))
+        return max(60, min(w, 200)), max(20, min(h, 60))
+
+    def run(self, sid, addr):
+        sys.stdout.write("\033[?1000h\033[?1006h")        # report mouse clicks
+        try:
+            super().run(sid, addr)
+        finally:
+            sys.stdout.write("\033[?1006l\033[?1000l" + self._clear_images())
+            sys.stdout.flush()
+
+    def _clear_images(self):
+        from .canvas import KITTY_CLEAR
+        return KITTY_CLEAR if self.protocol == "kitty" else ""
+
+    def _paint(self, sid, path, items, lines, sel, edit, status, tick, cols, rows):
+        from .canvas import encode_image
+        W, H = cols * CELL_W, (rows - 1) * CELL_H
+        canvas, self._hits = pixel_frame(sid, path, items, lines, sel, edit, status, W, H)
+        self._dims = (W, H, cols, rows - 1)
+        sys.stdout.write("\033[H" + encode_image(canvas.png(), self.protocol, cols, rows - 1))
+        sys.stdout.flush()
+
+    def _loading(self, sid):
+        cols, rows = self._size()
+        self._paint(sid, "...", [], ["", "fetching %s... and verifying every signature and block" % sid[:12]],
+                    0, None, "joining the network via " + self.relay, 0, cols, rows)
+
+    def _hit(self, cx, cy):
+        W, H, cols, rows = self._dims
+        px, py = (cx - 0.5) * W / cols, (cy - 0.5) * H / rows
+        for x0, y0, x1, y1, act in self._hits:
+            if x0 <= px < x1 and y0 <= py < y1:
+                return act
+        return None
+
+
 def run(home, ref, force_plain=False, mode=None):
     """mode: None picks the best available (curses > raw ANSI > plain line-input); or force one of
     'curses', 'raw', 'plain' explicitly (used by --plain / --raw, and by tests)."""
@@ -551,11 +709,18 @@ def run(home, ref, force_plain=False, mode=None):
     if mode is None:
         import os as _os
         truecolor = _os.environ.get("COLORTERM", "").lower() in ("truecolor", "24bit")
-        if HAVE_RAWTTY and truecolor and sys.stdin.isatty() and sys.stdout.isatty():
+        from .canvas import detect_protocol
+        if HAVE_RAWTTY and sys.stdin.isatty() and sys.stdout.isatty() and detect_protocol():
+            mode = "pixel"
+        elif HAVE_RAWTTY and truecolor and sys.stdin.isatty() and sys.stdout.isatty():
             mode = "fancy"
     if mode is None:
         mode = "curses" if HAVE_CURSES else ("raw" if (HAVE_RAWTTY and sys.stdin.isatty()) else "plain")
-    if mode == "fancy" and HAVE_RAWTTY:
+    if mode == "pixel" and HAVE_RAWTTY:
+        from .canvas import detect_protocol
+        proto = detect_protocol() or detect_protocol("iterm")
+        PixelBrowser(nav, proto).run(sid, addr)
+    elif mode == "fancy" and HAVE_RAWTTY:
         FancyBrowser(nav).run(sid, addr)
     elif mode == "curses" and HAVE_CURSES:
         curses.wrapper(lambda scr: CursesBrowser(nav, scr).run(sid, addr))
