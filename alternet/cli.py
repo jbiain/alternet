@@ -241,6 +241,36 @@ def cmd_bbs(a, home):
     tui.run(home, a.site, mode=mode)
 
 
+# The default front door: like typing a well-known address into a browser. Anyone can override these or run
+# their own; nothing in the protocol depends on them (see docs/011).
+LANDING_RELAY = "y-0-x.com:4242"
+LANDING_SITE = "7436eed409230dfff50e14250166eb9b@4138c4b7f10518c1eadd60c1b91c76a5"
+
+
+def cmd_start(a, home):
+    """One command from nothing to the landing BBS: set up a home if needed, join the network, open the menu."""
+    from . import tui
+    if not home.exists():
+        home.init(auto=False, standalone=True)
+        print("Created your Alternet home at", home.path)
+    relay = a.relay or LANDING_RELAY
+    def f(s):
+        if relay not in s["connect"]:
+            s["connect"].append(relay)
+    _setting(home, f)
+    names = home.names()
+    if "home" not in names or a.site:
+        names["home"] = a.site or LANDING_SITE
+        home.save_names(names)
+    print("Joining the network through %s ..." % relay)
+    tui.run(home, "home", mode=("plain" if a.plain else None))
+
+
+def cmd_tour(a, home):
+    from . import tour
+    sys.exit(tour.run(fast=a.fast))
+
+
 def cmd_gateway(a, home):
     home.require()
     from . import gateway
@@ -408,6 +438,12 @@ def build_parser():
         [(["site"], dict(help="site id, petname, or SITE@NODEADDRESS")),
          (["--plain"], dict(action="store_true", help="use the plain print/input menu, no live keys")),
          (["--raw"], dict(action="store_true", help="force the termios/ANSI live-key renderer (used on a-Shell/iOS)"))])
+    add("start", cmd_start, "set up if needed, join the network, and open the landing BBS (the easiest way in)", [
+        (["--relay"], dict(help="HOST:PORT of a relay to join (default: the public one)")),
+        (["--site"], dict(help="SITE@NODEADDRESS to use as your home page instead of the default")),
+        (["--plain"], dict(action="store_true"))])
+    add("tour", cmd_tour, "a narrated demo: publish, replicate, reject tampering, survive the publisher going offline",
+        [(["--fast"], dict(action="store_true", help="no pauses"))])
     add("gateway", cmd_gateway, "serve Alternet sites to an ordinary web browser (read-only; fetches any "
         "public site id on demand, not just ones already stored here)", [
         (["--port"], dict(type=int, default=4280)),

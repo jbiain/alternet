@@ -255,3 +255,14 @@ class SharedDirectoryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TourTests(unittest.TestCase):
+    def test_tour_runs_to_completion(self):
+        from alternet import tour
+        import contextlib, io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = tour.run(fast=True)
+        self.assertEqual(rc, 0)
+        self.assertIn("REJECTED", buf.getvalue())

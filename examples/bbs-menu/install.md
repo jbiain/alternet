@@ -1,5 +1,10 @@
 # Installing Alternet
 
+Fastest way in, after installing:
+
+    alternet start       # sets up, joins the network, opens this BBS
+    alternet tour        # a one-minute demo of what makes it different
+
 Needs Python 3.9+.
 
     pip install -e core/            # from the project source, installs `alternet` and Reticulum
@@ -16,4 +21,4 @@ On a phone without a package manager (tested with a-Shell on iOS):
 
 To join the public relay so you're reachable across networks:
 
-    alternet connect 178.128.165.25:4242
+    alternet connect y-0-x.com:4242

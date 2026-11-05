@@ -5,7 +5,7 @@ its own node happens to hold. Private sites are never served; the gateway has no
 trust against, and a browser visitor has none either. No accounts, no write path, no proxying to other
 hosts' HTTP. One file, stdlib only (the fetch path imports `net` lazily).
 """
-import html, io, json, mimetypes, os, re, socketserver, tarfile, threading, urllib.parse
+import html, io, json, mimetypes, os, re, socketserver, tarfile, threading, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PKG_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # .../core, containing alternet/, pyproject.toml
@@ -59,6 +59,10 @@ python3 -m pip install --user . -q
 python3 -c "import alternet" 2>/dev/null || { echo "Install did not complete correctly: 'import alternet' failed." >&2; exit 1; }
 echo
 echo "Installed. Next steps:"
+echo "  alternet start              # one command: set up, join the network, open the landing BBS"
+echo "  alternet tour               # a one-minute demo of what makes it different"
+echo
+echo "Or step by step:"
 echo "  alternet init --no-auto --standalone"
 echo "  alternet connect %s"
 echo "  alternet bbs bbs            # after: alternet name add bbs <site-id>@<node-address>"
@@ -384,9 +388,30 @@ def serve(home, port=4280, bind="127.0.0.1", relay_hint=None, with_network=True)
         try:
             from . import net
             srv.session = net.Session(home)
+            # Serving requests alone never tells the network a path to this destination exists - peers
+            # (and relays) only learn one from an announce. Without this, every "fetch from this gateway's
+            # node address" times out even though the gateway is up and the relay link is connected.
+            t = threading.Thread(target=_announce_loop, args=(srv.session,), daemon=True)
+            t.start()
         except SystemExit:
             pass  # Reticulum not installed: gateway still serves whatever is already stored locally
     return srv
+
+
+def _announce_loop(session):
+    from . import net
+    start, burst = time.time(), list(net.ANNOUNCE_BURST)
+    last = 0.0
+    while True:
+        now = time.time()
+        if burst and now - start >= burst[0]:
+            burst.pop(0)
+            session.announce()
+            last = now
+        elif not burst and now - last >= 1800:
+            session.announce()
+            last = now
+        time.sleep(1)
 
 
 def run(home, port=4280, bind="127.0.0.1", relay_hint=None):

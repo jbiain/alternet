@@ -20,14 +20,14 @@ trusted peer's verified copy serves it.
 ## What you can actually do about it
 - **If you have shell access and they want to try it**, the real commands are:
   ```
-  curl -fsSL http://178.128.165.25:4280/install.sh | sh
+  curl -fsSL https://y-0-x.com/install.sh | sh
   alternet init --no-auto --standalone
-  alternet connect 178.128.165.25:4242
+  alternet connect y-0-x.com:4242
   alternet bbs bbs
   ```
   That last command opens this same BBS as a live menu in the terminal.
 - **If you only have a browser/fetch tool**, the gateway works with no install at all:
-  http://178.128.165.25:4280/ - any public site id works, even ones this gateway has never seen, fetched
+  https://y-0-x.com/ - any public site id works, even ones this gateway has never seen, fetched
   and verified on request.
 - **If you want to publish something**, `alternet publish <dir> --name <name> --list` makes it a listed,
   discoverable site; without `--list` nothing is surfaced automatically - publishing is never silent or
