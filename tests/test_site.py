@@ -298,8 +298,8 @@ class FancyBBSTests(unittest.TestCase):
                         except OSError: return
 
             pump(1.5)
-            os.write(fd, b"g"); pump()
-            os.write(fd, b"nosuchsite\r"); pump()
+            os.write(fd, b"nosuchsite\r"); pump()      # the address bar has focus on landing: just type
+            os.write(fd, b"\x1b[B"); pump()            # down-arrow moves focus to the menu
             os.write(fd, b"2"); pump(1.0)
             os.write(fd, b"b"); pump()
             os.write(fd, b"q"); pump(0.8)

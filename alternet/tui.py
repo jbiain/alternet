@@ -399,7 +399,7 @@ def fancy_frame(sid, path, items, lines, sel, edit, status, tick, w, h):
     out = [_stars(w, tick, 0),
            " " * ((w - 21) // 2) + BOLD + _gradient("◆  A L T E R N E T  ◆") + RESET,
            _stars(w, tick, 1)]
-    label = "address" if edit is None else "address (Enter=go, Esc=cancel)"
+    label = "address" if edit is None else "address (Enter=go, down=menu)"
     inner = w - 4
     out.append(_rgb(*CYAN) + "╭─ " + label + " " + "─" * max(0, w - 5 - len(label)) + "╮" + RESET)
     if edit is None:
@@ -408,6 +408,9 @@ def fancy_frame(sid, path, items, lines, sel, edit, status, tick, w, h):
         body = DIM + (loc + hint)[:inner] + RESET
     else:
         body = _rgb(*GOLD) + edit[-(inner - 1):] + RESET + REV + " " + RESET
+        if not edit:
+            body += DIM + " type a site id or name, Enter to go  |  down-arrow for the menu" + RESET
+            body = body[: len(body)]
     pad = max(0, inner - _vlen(body))
     out.append(_rgb(*CYAN) + "│ " + RESET + body + " " * pad + _rgb(*CYAN) + " │" + RESET)
     out.append(_rgb(*CYAN) + "╰" + "─" * (w - 2) + "╯" + RESET)
@@ -448,6 +451,7 @@ class FancyBrowser(RawAnsiBrowser):
         conn = self.nav.home.settings().get("connect") or []
         self.relay = conn[0] if conn else "no relay (local only)"
         self.nav.on_fetch = self._loading
+        self._first = True
         sys.stdout.write("\033[?1049h\033[?25l" + CLEAR)
         try:
             tty.setraw(fd)
@@ -475,7 +479,9 @@ class FancyBrowser(RawAnsiBrowser):
 
     def _page(self, sid, path, text, err):
         items, lines = ([], ["(%s)" % err]) if err else _parse(text)
-        sel, tick, edit, flash = 0, 0, None, None
+        sel, tick, flash = 0, 0, None
+        edit = "" if self._first else None   # the very first screen of a session: address bar has focus
+        self._first = False
         while True:
             w, h = self._size()
             self._draw(fancy_frame(sid, path, items, lines, sel, edit, flash or self._status(), tick, w, h))
@@ -485,9 +491,12 @@ class FancyBrowser(RawAnsiBrowser):
                 continue
             flash = None
             if edit is not None:
-                if k in ("esc", "quit"):
+                if k in ("esc", "quit", "down"):
                     edit = None
                 elif k == "enter":
+                    if not edit:
+                        edit = None
+                        continue
                     entry, flash = self.nav.goto(edit)
                     edit = None
                     if entry:
@@ -503,7 +512,7 @@ class FancyBrowser(RawAnsiBrowser):
                 return "quit"
             if k in ("b", "backspace"):
                 return "back"
-            if k in ("g", "/"):
+            if k in ("g", "/") or (k == "up" and sel == 0):
                 edit = ""
             elif items:
                 if k in ("down", "j"):
