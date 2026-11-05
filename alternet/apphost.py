@@ -116,6 +116,44 @@ class OutputFilter:
         return bytes(out)
 
 
+# ---------------------------------------------------------------- spec handshake (docs/014)
+SPEC = b"ALTSPEC "           # host -> client, one line, before a site app starts: signed manifest + app.json blocks
+GO, NO = b"ALTGO", b"ALTNO"   # client -> host: the visitor accepted / declined the permissions
+
+
+def spec_line(store, sid):
+    """What the host sends so the client can verify the permissions itself instead of trusting the host."""
+    import base64
+    body = store.info(sid)
+    blocks = {h: base64.b64encode(store.get_block(h)).decode() for h in body["files"]["app.json"]}
+    return SPEC + json.dumps({"manifest": store.get_manifest(sid), "blocks": blocks}).encode() + b"\n"
+
+
+def parse_spec_line(line, expect_site=None):
+    """Client side: verify the signature and block hashes, then validate app.json. Returns (site_id, spec)."""
+    import base64
+    from . import appspec, site as sitelib
+    if not line.startswith(SPEC):
+        raise ValueError("no spec")
+    d = json.loads(line[len(SPEC):])
+    body = sitelib.verify_manifest(d["manifest"])
+    if expect_site and body["site"] != expect_site and not body["site"].startswith(expect_site):
+        raise ValueError("the host offered a different site than the one you asked for")
+    if "app.json" not in body["files"]:
+        raise ValueError("the site has no app.json")
+    parts = []
+    for h in body["files"]["app.json"]:
+        data = base64.b64decode(d["blocks"][h])
+        sitelib.verify_block(h, data)
+        parts.append(data)
+    return body["site"], appspec.validate(b"".join(parts))
+
+
+def spec_digest(spec):
+    import hashlib
+    return hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()
+
+
 # ---------------------------------------------------------------- host-side config and sandbox
 class App:
     def __init__(self, name, cmd, cwd=None, access="public", net=False, ro=(), env=None, seconds=MAX_SESSION_SECONDS,
@@ -337,6 +375,12 @@ class _Session:
                 except (TypeError, ValueError, IndexError):
                     return self.finish("no such app")
             app = apps.get(want)
+            if app is None and len(want) >= 8 and all(c in "0123456789abcdef" for c in want.lower()):
+                store = self.host.home.store()
+                for cand in apps.values():
+                    if cand.site and (store.resolve(cand.site) or "").startswith(want.lower()):
+                        app = cand
+                        break
             if app is None:
                 return self.finish("no app named %r here" % want)
             if not self.authorised(app):
@@ -346,8 +390,13 @@ class _Session:
             if app.site:
                 try:
                     app = resolve_site_app(self.host.home, app)
+                    sid = self.host.home.store().resolve(app.site)
+                    _write_all(self.buf, spec_line(self.host.home.store(), sid), self.alive)
                 except ValueError as e:
                     return self.finish("cannot start %s: %s" % (want, e))
+                answer = self.read_line(timeout=180)
+                if answer is None or not answer.startswith(GO):
+                    return self.finish("permissions not accepted")
             self.start(app, rows, cols, term)
             leftover, self.leftover = self.leftover, b""
             if leftover:
@@ -455,6 +504,16 @@ class Host:
         self.sessions = []
 
 
+def _announce_data(home, apps):
+    """Site ids of the app sites this host serves (so clients can find a host from a site id alone)."""
+    store, ids = home.store(), []
+    for a in apps.values():
+        sid = store.resolve(a.site) if a.site else None
+        if sid and sid not in ids:
+            ids.append(sid)
+    return json.dumps(ids[:8]).encode()
+
+
 def serve(home, apps, sandbox=True, max_sessions=4):
     """Announce the apps' address and run one sandboxed process per connecting client."""
     if not apps:
@@ -488,9 +547,9 @@ def serve(home, apps, sandbox=True, max_sessions=4):
     while True:
         now = time.time()
         if burst and now - start >= burst[0]:        # early, repeated announces: the first can precede the link-up
-            burst.pop(0); dest.announce(); last = now
-        elif not burst and now - last >= 1800:
-            dest.announce(); last = now
+            burst.pop(0); dest.announce(app_data=_announce_data(home, apps)); last = now
+        elif not burst and now - last >= 120:
+            dest.announce(app_data=_announce_data(home, apps)); last = now
         time.sleep(1)
 
 
@@ -503,24 +562,73 @@ def app_address(home):
 
 
 # ---------------------------------------------------------------- client
+class _AppListener:
+    aspect_filter = "%s.%s" % (APP, ASPECT)
+
+    def __init__(self):
+        self.hosts = {}          # site id -> dest hash of a host announcing it
+
+    def received_announce(self, destination_hash, announced_identity, app_data):
+        try:
+            for sid in json.loads(app_data.decode()):
+                if isinstance(sid, str) and len(sid) == 32:
+                    self.hosts[sid] = destination_hash
+        except Exception:
+            return
+
+
+def _hex32(x):
+    return len(x) == 32 and all(c in "0123456789abcdef" for c in x.lower())
+
+
 def connect(home, ref, timeout=30, retries=3):
-    """Attach this terminal to the app at ADDRESS[/APP]. Ctrl-] disconnects."""
+    """Attach this terminal to an app. ref is ADDRESS[/APP] (a host), SITE@ADDRESS, or just SITE / a name
+    (the host is found from its announces). Ctrl-] disconnects."""
     import select, shutil as sh, termios, tty
     RNS = net._rns()
-    addr_hex, _, appname = ref.partition("/")
-    try:
+    from .cli import _expand, NameChanged
+    listener = _AppListener()
+    appname, want_site, dh = "", None, None
+    if "/" in ref:
+        addr_hex, _, appname = ref.partition("/")
+        if not _hex32(addr_hex):
+            raise SystemExit("alternet: bad app address %r (expected 32 hex characters, optionally /APP)" % addr_hex)
         dh = bytes.fromhex(addr_hex)
-        if len(dh) != 16:
-            raise ValueError
-    except ValueError:
-        raise SystemExit("alternet: bad app address %r (expected 32 hex characters, optionally /APP)" % addr_hex)
+    else:
+        try:
+            site, _, addr_hex = _expand(home, ref).partition("@")
+        except NameChanged as e:
+            raise SystemExit("alternet: %s" % e)
+        if not _hex32(site):
+            if _hex32(ref):                                  # a bare 32-hex value: treat as a host address
+                dh = bytes.fromhex(ref)
+            else:
+                raise SystemExit("alternet: cannot resolve %r to a site id or host address" % ref)
+        else:
+            want_site, appname = site.lower(), site.lower()
+            if addr_hex:
+                if not _hex32(addr_hex):
+                    raise SystemExit("alternet: bad host address %r" % addr_hex)
+                dh = bytes.fromhex(addr_hex)
     RNS.Reticulum(home.rns_dir, loglevel=int(os.environ.get("ALTERNET_LOGLEVEL", RNS.LOG_ERROR)))
+    RNS.Transport.register_announce_handler(listener)
     my_id = RNS.Identity.from_file(os.path.join(home.path, "node.identity")) if os.path.exists(
         os.path.join(home.path, "node.identity")) else None
     if my_id is None:
         net.node_ids(home)
         my_id = RNS.Identity.from_file(os.path.join(home.path, "node.identity"))
-    print("Looking for the app ...", file=sys.stderr)
+    if dh is None:
+        print("Looking for a host serving this app (hosts announce every 2 minutes, this can take a while) ...",
+              file=sys.stderr)
+        end = time.time() + max(timeout, 130)
+        while want_site not in listener.hosts and time.time() < end:
+            time.sleep(0.5)
+        dh = listener.hosts.get(want_site)
+        if dh is None:
+            raise SystemExit("alternet: no host announced this app yet (hosts announce every 2 minutes). "
+                             "Try again, or use SITE@HOSTADDRESS.")
+    else:
+        print("Looking for the app ...", file=sys.stderr)
     link = None
     for attempt in range(retries):
         t = time.time()
@@ -539,21 +647,78 @@ def connect(home, ref, timeout=30, retries=3):
             break
         link = None
     if link is None:
-        raise SystemExit("alternet: could not reach %s (is it running, and are you connected to the network?)" % addr_hex)
+        raise SystemExit("alternet: could not reach the host (is it running, and are you connected to the network?)")
     link.identify(my_id)
     out, filt = sys.stdout.buffer, OutputFilter()
+    state = {"mode": "pre", "pre": b"", "spec_line": None}
+    got = threading.Event()
 
-    def on_ready(n):
-        data = filt.feed(buf.read(n) or b"")
+    def emit(data):
+        data = filt.feed(data)
         if data:
             out.write(data)
             out.flush()
+
+    def on_ready(n):
+        data = buf.read(n) or b""
+        if state["mode"] == "stream":
+            return emit(data)
+        if state["mode"] == "wait":
+            state["pre"] += data
+            return
+        state["pre"] += data
+        pre = state["pre"]
+        if SPEC.startswith(pre[:len(SPEC)]) and len(pre) < len(SPEC):
+            return                                         # could still become a spec line
+        if pre.startswith(SPEC):
+            if b"\n" not in pre:
+                return
+            line, _, rest = pre.partition(b"\n")
+            state["spec_line"], state["mode"] = line + b"\n", "wait"
+            state["pre"] = rest
+            got.set()
+        else:
+            state["mode"] = "stream"
+            state["pre"] = b""
+            emit(pre)
 
     buf = RNS.Buffer.create_bidirectional_buffer(0, 0, link.get_channel(), on_ready)
     size = sh.get_terminal_size(fallback=(80, 24))
     head = b"%s %d %d %s %s\n" % (HEADER, size.lines, size.columns,
                                   os.environ.get("TERM", "xterm-256color").encode(), appname.encode())
     _write_all(buf, head, lambda: True)
+    got.wait(6)                                            # a site app sends its spec first; others just start
+    if state["spec_line"] is not None:
+        from . import appspec
+        try:
+            site, spec = parse_spec_line(state["spec_line"], want_site)
+        except (ValueError, KeyError, json.JSONDecodeError) as e:
+            link.teardown()
+            raise SystemExit("alternet: the host sent an app description that does not verify: %s" % e)
+        grants = home.app_grants()
+        if grants.get(site) != spec_digest(spec):
+            print("\n".join(appspec.describe(spec)))
+            print("  published by site %s (signature verified)" % site[:12])
+            try:
+                ok = input("Allow and run? [y/N] ").strip().lower() in ("y", "yes")
+            except EOFError:
+                ok = False
+            if not ok:
+                _write_all(buf, NO + b"\n", lambda: True)
+                link.teardown()
+                raise SystemExit("alternet: not allowed, nothing was run")
+            grants[site] = spec_digest(spec)
+            home.save_app_grants(grants)
+        _write_all(buf, GO + b"\n", lambda: True)
+        rest, state["pre"] = state["pre"], b""
+        state["mode"] = "stream"
+        if rest:
+            emit(rest)
+    elif state["mode"] == "pre":
+        state["mode"] = "stream"
+        if state["pre"]:
+            emit(state["pre"])
+            state["pre"] = b""
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:

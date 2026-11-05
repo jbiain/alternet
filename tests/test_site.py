@@ -679,3 +679,23 @@ class SiteAppTests(unittest.TestCase):
             resolve_site_app(h, App("d", None, site=sid))                       # host only offers python3 by default
         with self.assertRaises(ValueError):
             resolve_site_app(h, App("d", None, site="0" * 32))
+
+
+class SpecHandshakeTests(unittest.TestCase):
+    def test_spec_line_roundtrip_and_tamper(self):
+        import json
+        from alternet.apphost import spec_line, parse_spec_line
+        t = SiteAppTests("test_resolves_stored_app_with_host_policy")
+        h, sid = t._store_app({"app": 1, "title": "D", "run": ["x"], "runtime": "python3",
+                               "needs": {"secrets": ["K"]}}, {})
+        line = spec_line(h.store(), sid)
+        site, spec = parse_spec_line(line, sid)
+        self.assertEqual((site, spec["needs"]["secrets"]), (sid, ["K"]))
+        with self.assertRaises(ValueError):
+            parse_spec_line(line, "f" * 32)                               # host offered a different site
+        d = json.loads(line[8:])
+        first = next(iter(d["blocks"]))
+        import base64
+        d["blocks"][first] = base64.b64encode(b'{"app":1,"title":"evil","run":["x"]}').decode()
+        with self.assertRaises(ValueError):
+            parse_spec_line(b"ALTSPEC " + json.dumps(d).encode() + b"\n", sid)   # block no longer matches its hash

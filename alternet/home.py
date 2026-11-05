@@ -109,6 +109,18 @@ class Home:
             json.dump(allv, f)
 
     @property
+    def grants_file(self): return os.path.join(self.path, "app_grants.json")
+
+    def app_grants(self):
+        """{site id: digest of the app.json you accepted}. A changed app.json asks again."""
+        return _load(self.grants_file) if os.path.exists(self.grants_file) else {}
+
+    def save_app_grants(self, g):
+        os.makedirs(self.path, exist_ok=True)
+        with open(self.grants_file, "w") as f:
+            json.dump(g, f)
+
+    @property
     def directories_file(self): return os.path.join(self.path, "directories.json")
 
     def directories(self):
