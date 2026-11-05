@@ -126,10 +126,6 @@ KITTY_CLEAR = "\033_Ga=d,q=2\033\\"
 
 
 def probe(timeout=0.7):
-    return parse_probe(raw_probe(timeout))
-
-
-def raw_probe(timeout=0.7):
     """Ask the terminal what it can show, instead of guessing: a Kitty-graphics query, an XTVERSION query and a
     Device Attributes request (which every terminal answers last, so its reply means 'done'). Returns 'kitty',
     'iterm' or None. Needs a tty; leaves it as it found it."""
@@ -147,7 +143,7 @@ def raw_probe(timeout=0.7):
                 buf += os.read(fd, 4096)
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
-    return buf
+    return parse_probe(buf)
 
 
 def parse_probe(buf):
