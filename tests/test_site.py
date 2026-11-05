@@ -641,3 +641,41 @@ class AppSpecTests(unittest.TestCase):
             appspec.check_site_dir(d)
         os.makedirs(os.path.join(d, "bin")); open(os.path.join(d, "bin", "app"), "w").write("x")
         self.assertEqual(appspec.check_site_dir(d)["run"], ["bin/app"])
+
+
+class SiteAppTests(unittest.TestCase):
+    def _store_app(self, spec, files):
+        import json, tempfile
+        from alternet import site as sitelib
+        from alternet.home import Home
+        d = tempfile.mkdtemp(); h = Home(os.path.join(d, "h")); h.init(auto=False, standalone=True)
+        src = os.path.join(d, "s"); os.makedirs(src)
+        open(os.path.join(src, "app.json"), "w").write(json.dumps(spec))
+        for k, v in files.items():
+            open(os.path.join(src, k), "w").write(v)
+        m, blocks = sitelib.pack(src, h.key(), "demo", 1)
+        st = h.store(); st.put_manifest(m)
+        for bh, data in blocks.items():
+            st.put_block(bh, data)
+        return h, sitelib.verify_manifest(m)["site"]
+
+    def test_resolves_stored_app_with_host_policy(self):
+        from alternet.apphost import App, resolve_site_app
+        h, sid = self._store_app({"app": 1, "title": "D", "run": ["python3", "main.py"], "runtime": "python3",
+                                  "needs": {"net": ["api.example.com"], "secrets": ["K"], "seconds": 120}},
+                                 {"main.py": "print(1)"})
+        a = resolve_site_app(h, App("d", None, site=sid, access="trusted", seconds=900))
+        self.assertEqual(a.cmd, ["python3", "main.py"])
+        self.assertEqual((a.access, a.seconds, a.allow, a.net), ("trusted", 120, [], False))   # net not granted by host
+        self.assertTrue(os.path.exists(os.path.join(a.cwd, "main.py")))
+        self.assertEqual(a.secrets, ["K"])
+        g = resolve_site_app(h, App("d", None, site=sid, grant_net=True))
+        self.assertEqual(g.allow, ["api.example.com"])
+
+    def test_refuses_unoffered_runtime_and_missing_site(self):
+        from alternet.apphost import App, resolve_site_app
+        h, sid = self._store_app({"app": 1, "title": "D", "run": ["x"], "runtime": "native"}, {})
+        with self.assertRaises(ValueError):
+            resolve_site_app(h, App("d", None, site=sid))                       # host only offers python3 by default
+        with self.assertRaises(ValueError):
+            resolve_site_app(h, App("d", None, site="0" * 32))

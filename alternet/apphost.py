@@ -119,13 +119,15 @@ class OutputFilter:
 # ---------------------------------------------------------------- host-side config and sandbox
 class App:
     def __init__(self, name, cmd, cwd=None, access="public", net=False, ro=(), env=None, seconds=MAX_SESSION_SECONDS,
-                 env_file=None, allow=()):
+                 env_file=None, allow=(), site=None, runtimes=("python3",), grant_net=False):
         if access not in ("public", "trusted"):
             raise ValueError("app %r: access must be 'public' or 'trusted'" % name)
-        if not cmd:
-            raise ValueError("app %r has no command" % name)
-        self.name, self.cmd, self.cwd, self.access = name, list(cmd), cwd, access
+        if not cmd and not site:
+            raise ValueError("app %r has no command or site" % name)
+        self.name, self.cmd, self.cwd, self.access = name, list(cmd or []), cwd, access
         self.net, self.ro, self.env, self.seconds = bool(net), list(ro), dict(env or {}), int(seconds)
+        self.secrets = None                # for site apps: the only env_file names the app declared it needs
+        self.site, self.runtimes, self.grant_net = site, tuple(runtimes), bool(grant_net)   # site: serve the app stored under this site id
         self.allow = list(allow)           # hostnames ("api.openai.com", ".openai.com") reachable on 443 via the proxy
         self.env_file = env_file          # KEY=VALUE lines read on the host at session start (keep it 0600)
 
@@ -139,7 +141,51 @@ def load_apps(home):
     with open(path) as f:
         raw = json.load(f).get("apps", {})
     return {n: App(n, d.get("cmd"), d.get("cwd"), d.get("access", "public"), d.get("net", False),
-                   d.get("ro", ()), d.get("env"), d.get("seconds", MAX_SESSION_SECONDS), d.get("env_file"), d.get("allow", ())) for n, d in raw.items()}
+                   d.get("ro", ()), d.get("env"), d.get("seconds", MAX_SESSION_SECONDS), d.get("env_file"), d.get("allow", ()),
+                   d.get("site"), d.get("runtimes", ("python3",)), d.get("grant_net", False)) for n, d in raw.items()}
+
+
+def resolve_site_app(home, app):
+    """Turn a policy entry that names a site into a runnable App: read the stored site's app.json (signature
+    already verified by the Store), materialise its files read-only, and intersect what the app asks for with
+    what this host's policy grants. Raises ValueError with a reason a visitor can be shown."""
+    from . import appspec
+    store = home.store()
+    sid = store.resolve(app.site)
+    body = store.info(sid) if sid else None
+    if not body:
+        raise ValueError("this host does not hold site %s" % app.site)
+    if "app.json" not in body["files"]:
+        raise ValueError("site %s is not an app (no app.json)" % app.site[:12])
+    if store.missing(body):
+        raise ValueError("site %s is only partly stored on this host" % app.site[:12])
+    spec = appspec.validate(store.read(sid, "app.json"))
+    if spec["runtime"] not in app.runtimes:
+        raise ValueError("this host does not offer the %s runtime" % spec["runtime"])
+    root = os.path.join(home.path, "appsites", "%s-v%d" % (sid, body["version"]))
+    if not os.path.isdir(root):
+        tmp = root + ".tmp"
+        shutil.rmtree(tmp, ignore_errors=True)
+        for rel in body["files"]:
+            dest = os.path.normpath(os.path.join(tmp, rel))
+            if not dest.startswith(tmp + os.sep):
+                raise ValueError("unsafe path in site: %r" % rel)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, "wb") as f:
+                f.write(store.read(sid, rel))
+            if rel == spec["run"][0]:
+                os.chmod(dest, 0o755)
+        os.rename(tmp, root)
+    needs = spec["needs"]
+    run = list(spec["run"])
+    if "/" in run[0]:
+        run[0] = "/app/" + run[0].lstrip("./")
+    allow = needs["net"] if (needs["net"] and app.grant_net) else []
+    out = App(app.name, run, cwd=root, access=app.access, net=bool(allow), ro=app.ro,
+               env={}, seconds=min(app.seconds, needs["seconds"]), env_file=app.env_file, allow=allow,
+               site=app.site, runtimes=app.runtimes)
+    out.secrets = needs["secrets"]
+    return out
 
 
 def bwrap_argv(app, scratch, env):
@@ -297,6 +343,11 @@ class _Session:
                 who = self.remote.hash.hex() if self.remote is not None else "unknown"
                 net.log("refused %s for app %s" % (who, want))
                 return self.finish("%s is for trusted peers only. Ask the host to run: alternet trust %s" % (want, who))
+            if app.site:
+                try:
+                    app = resolve_site_app(self.host.home, app)
+                except ValueError as e:
+                    return self.finish("cannot start %s: %s" % (want, e))
             self.start(app, rows, cols, term)
             leftover, self.leftover = self.leftover, b""
             if leftover:
@@ -338,7 +389,7 @@ class _Session:
             with open(app.env_file) as f:
                 for ln in f:
                     k, eq, v = ln.strip().partition("=")
-                    if eq and k and not k.startswith("#"):
+                    if eq and k and not k.startswith("#") and (app.secrets is None or k in app.secrets):
                         env[k] = v
         if self.host.sandbox:
             argv, run_env, cwd = bwrap_argv(app, self.scratch, env), None, None
