@@ -237,7 +237,7 @@ def cmd_pin(a, home):
 def cmd_bbs(a, home):
     home.require()
     from . import tui
-    mode = "plain" if a.plain else ("raw" if a.raw else ("pixel" if getattr(a, "pixel", False) else ("fancy" if getattr(a, "fancy", False) else None)))
+    mode = "plain" if a.plain else ("raw" if a.raw else ("fancy" if getattr(a, "fancy", False) else None))
     tui.run(home, a.site, mode=mode)
 
 
@@ -263,7 +263,7 @@ def cmd_start(a, home):
         names["home"] = a.site or LANDING_SITE
         home.save_names(names)
     print("Joining the network through %s ..." % relay)
-    tui.run(home, "home", mode=("plain" if a.plain else ("pixel" if a.pixel else ("fancy" if a.fancy else None))))
+    tui.run(home, "home", mode=("plain" if a.plain else ("fancy" if a.fancy else None)))
 
 
 def cmd_world(a, home):
@@ -470,15 +470,12 @@ def build_parser():
         [(["site"], dict(help="site id, petname, or SITE@NODEADDRESS")),
          (["--plain"], dict(action="store_true", help="use the plain print/input menu, no live keys")),
          (["--raw"], dict(action="store_true", help="force the termios/ANSI live-key renderer (used on a-Shell/iOS)")),
-         (["--fancy"], dict(action="store_true", help="force the truecolor game-style screen (auto on truecolor terminals)")),
-         (["--pixel"], dict(action="store_true", help="force the pixel-canvas desktop (needs a terminal that shows inline "
-                            "images: Kitty, iTerm2, WezTerm; set ALTERNET_PIXEL=kitty|iterm to pick the protocol)"))])
+         (["--fancy"], dict(action="store_true", help="force the truecolor game-style screen (auto on truecolor terminals)"))])
     add("start", cmd_start, "set up if needed, join the network, and open the landing BBS (the easiest way in)", [
         (["--relay"], dict(help="HOST:PORT of a relay to join (default: the public one)")),
         (["--site"], dict(help="SITE@NODEADDRESS to use as your home page instead of the default")),
         (["--plain"], dict(action="store_true")),
-        (["--fancy"], dict(action="store_true", help="force the truecolor game-style screen")),
-        (["--pixel"], dict(action="store_true", help="force the pixel-canvas desktop (inline-image terminals)"))])
+        (["--fancy"], dict(action="store_true", help="force the truecolor game-style screen"))])
     add("world", cmd_world, "walk a first-person 3D view of the network: your sites are doors (truecolor terminal)", [])
     add("view", cmd_view, "show a PNG (a file, or a page of a stored site) in the terminal", [
         (["source"], dict(help="a PNG file, or a site id/name")),

@@ -24,5 +24,3 @@
 - `alternet tour`   - a one-minute demo: sign, replicate, reject tampering, survive the publisher going offline
 - `alternet world`  - walk a first-person 3D view of the network; sites are doors (truecolor terminal)
 - `alternet view <png-file | site> [page]` - show a PNG in the terminal
-- `alternet start --pixel` - the pixel desktop: windows, buttons, mouse clicks, drawn as a real image
-  (needs a terminal that shows inline images: Kitty, iTerm2, WezTerm; `ALTERNET_PIXEL=kitty|iterm`)
