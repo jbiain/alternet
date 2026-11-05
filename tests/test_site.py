@@ -699,3 +699,38 @@ class SpecHandshakeTests(unittest.TestCase):
         d["blocks"][first] = base64.b64encode(b'{"app":1,"title":"evil","run":["x"]}').decode()
         with self.assertRaises(ValueError):
             parse_spec_line(b"ALTSPEC " + json.dumps(d).encode() + b"\n", sid)   # block no longer matches its hash
+
+
+class StorageSyncTests(unittest.TestCase):
+    def test_pack_unpack_roundtrip_and_limits(self):
+        import tempfile
+        from alternet.apphost import pack_dir, unpack_dir
+        a, b = tempfile.mkdtemp(), tempfile.mkdtemp()
+        os.makedirs(os.path.join(a, "sub")); open(os.path.join(a, "sub", "x.txt"), "w").write("hello")
+        os.symlink("/etc/passwd", os.path.join(a, "link"))                 # symlinks never travel
+        blob = pack_dir(a, 1 << 20)
+        self.assertEqual(unpack_dir(blob, b, 1 << 20), 1)
+        self.assertEqual(open(os.path.join(b, "sub", "x.txt")).read(), "hello")
+        with self.assertRaises(ValueError):
+            pack_dir(a, 3)
+        with self.assertRaises(ValueError):
+            unpack_dir(blob, tempfile.mkdtemp(), 3)
+
+    def test_unpack_rejects_hostile_paths(self):
+        import base64, json, tempfile, zlib
+        from alternet.apphost import unpack_dir
+        for rel in ("../evil", "/abs", "a/../../b", "", "a//b", "a\\b"):
+            blob = base64.b64encode(zlib.compress(json.dumps({"f": {rel: "eA=="}}).encode()))
+            with self.assertRaises(ValueError, msg=rel):
+                unpack_dir(blob, tempfile.mkdtemp(), 1 << 20)
+
+    def test_demux_splits_text_and_payload_across_chunks(self):
+        from alternet.apphost import Demux, SAVE
+        d = Demux()
+        stream = b"screen text" + SAVE + b"PAYLOAD\nafter"
+        text, got = b"", None
+        for i in range(0, len(stream), 4):                                  # worst case: tiny chunks
+            t, p = d.feed(stream[i:i + 4])
+            text += t
+            got = got or p
+        self.assertEqual((text, got), (b"screen textafter", b"PAYLOAD"))     # output after the save line still shows

@@ -122,12 +122,12 @@ SEC = b"ALTSEC "             # client -> host after GO: {"NAME": "value"} for th
 GO, NO = b"ALTGO", b"ALTNO"   # client -> host: the visitor accepted / declined the permissions
 
 
-def spec_line(store, sid, visitor_secrets=False):
+def spec_line(store, sid, visitor_secrets=False, storage=False):
     """What the host sends so the client can verify the permissions itself instead of trusting the host."""
     import base64
     body = store.info(sid)
     blocks = {h: base64.b64encode(store.get_block(h)).decode() for h in body["files"]["app.json"]}
-    return SPEC + json.dumps({"manifest": store.get_manifest(sid), "blocks": blocks, "visitor_secrets": bool(visitor_secrets)}).encode() + b"\n"
+    return SPEC + json.dumps({"manifest": store.get_manifest(sid), "blocks": blocks, "visitor_secrets": bool(visitor_secrets), "storage": bool(storage)}).encode() + b"\n"
 
 
 def parse_spec_line(line, expect_site=None):
@@ -155,11 +155,101 @@ def spec_digest(spec):
     return hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()
 
 
+# ---------------------------------------------------------------- per-site storage (kept on the visitor's side)
+DATA = b"ALTDATA "                 # client -> host after GO/secrets: this site's saved files (base64 of zlib JSON)
+SAVE = b"\x00ALTSAVE "             # host -> client when the session ends: the files to keep (same encoding)
+MAX_SYNC_MB = 8                    # practical cap while links are slow; app.json may ask for less
+MAX_FILES = 500
+
+
+def sync_limit(storage_mb):
+    return min(int(storage_mb), MAX_SYNC_MB) * 1024 * 1024
+
+
+def pack_dir(root, limit):
+    """Directory -> base64 text. Regular files only (symlinks skipped). ValueError if over `limit` bytes."""
+    import base64, zlib
+    files, total = {}, 0
+    for dirpath, dirs, names in os.walk(root):
+        for n in names:
+            p = os.path.join(dirpath, n)
+            if os.path.islink(p) or not os.path.isfile(p):
+                continue
+            total += os.path.getsize(p)
+            if total > limit or len(files) >= MAX_FILES:
+                raise ValueError("saved data is over the %d MB limit" % (limit // 1048576))
+            with open(p, "rb") as f:
+                files[os.path.relpath(p, root).replace(os.sep, "/")] = base64.b64encode(f.read()).decode()
+    return base64.b64encode(zlib.compress(json.dumps({"f": files}).encode())).decode().encode()
+
+
+def unpack_dir(blob, root, limit):
+    """Inverse of pack_dir, for data from an untrusted peer: bounded size, only plain relative paths."""
+    import base64, zlib
+    if len(blob) > limit * 2 + 4096:
+        raise ValueError("data too large")
+    d = zlib.decompressobj()
+    raw = d.decompress(base64.b64decode(blob), limit * 3 + 65536)
+    if d.unconsumed_tail:
+        raise ValueError("data too large")
+    files = json.loads(raw).get("f", {})
+    if not isinstance(files, dict) or len(files) > MAX_FILES:
+        raise ValueError("bad data")
+    total, out = 0, {}
+    for rel, enc in files.items():
+        parts = rel.split("/")
+        if (not rel or rel.startswith("/") or "\x00" in rel or any(x in ("", ".", "..") for x in parts)
+                or "\\" in rel or len(rel) > 200):
+            raise ValueError("unsafe path %r" % rel)
+        data = base64.b64decode(enc)
+        total += len(data)
+        if total > limit:
+            raise ValueError("data too large")
+        out[rel] = data
+    os.makedirs(root, exist_ok=True)
+    for rel, data in out.items():
+        dest = os.path.join(root, *rel.split("/"))
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest, "wb") as f:
+            f.write(data)
+    return len(out)
+
+
+class Demux:
+    """Client side: split app output into terminal text and the final SAVE payload (never shown)."""
+    def __init__(self):
+        self.hold, self.saving, self.payload = b"", False, None
+
+    def feed(self, data):
+        if self.saving:
+            self.payload += data
+            return self._done(b"")
+        buf = self.hold + data
+        self.hold = b""
+        i = buf.find(SAVE)
+        if i >= 0:
+            self.saving, self.payload = True, b""
+            self.payload = buf[i + len(SAVE):]
+            return self._done(buf[:i])
+        for k in range(min(len(SAVE) - 1, len(buf)), 0, -1):     # a partial marker at the end: wait for the rest
+            if SAVE.startswith(buf[-k:]):
+                self.hold = buf[-k:]
+                return buf[:-k], None
+        return buf, None
+
+    def _done(self, text):
+        if b"\n" in self.payload:
+            line, _, rest = self.payload.partition(b"\n")
+            self.saving, self.payload = False, None
+            return text + rest, line
+        return text, None
+
+
 # ---------------------------------------------------------------- host-side config and sandbox
 class App:
     def __init__(self, name, cmd, cwd=None, access="public", net=False, ro=(), env=None, seconds=MAX_SESSION_SECONDS,
                  env_file=None, allow=(), site=None, runtimes=("python3",), grant_net=False,
-                 visitor_secrets=False, path=()):
+                 visitor_secrets=False, path=(), allow_storage=True):
         if access not in ("public", "trusted"):
             raise ValueError("app %r: access must be 'public' or 'trusted'" % name)
         if not cmd and not site:
@@ -167,6 +257,7 @@ class App:
         self.name, self.cmd, self.cwd, self.access = name, list(cmd or []), cwd, access
         self.net, self.ro, self.env, self.seconds = bool(net), list(ro), dict(env or {}), int(seconds)
         self.visitor_secrets = bool(visitor_secrets)   # visitors supply the secrets the app declares (memory only)
+        self.allow_storage, self.storage_mb = bool(allow_storage), 0   # storage_mb is set when a site app is resolved
         self.path = list(path)                          # extra host directories on the app's PATH (put them in `ro` too)
         self.secrets = None                # for site apps: the only env_file names the app declared it needs
         self.site, self.runtimes, self.grant_net = site, tuple(runtimes), bool(grant_net)   # site: serve the app stored under this site id
@@ -185,7 +276,7 @@ def load_apps(home):
     return {n: App(n, d.get("cmd"), d.get("cwd"), d.get("access", "public"), d.get("net", False),
                    d.get("ro", ()), d.get("env"), d.get("seconds", MAX_SESSION_SECONDS), d.get("env_file"), d.get("allow", ()),
                    d.get("site"), d.get("runtimes", ("python3",)), d.get("grant_net", False),
-                   d.get("visitor_secrets", False), d.get("path", ())) for n, d in raw.items()}
+                   d.get("visitor_secrets", False), d.get("path", ()), d.get("storage", True)) for n, d in raw.items()}
 
 
 def resolve_site_app(home, app):
@@ -228,6 +319,7 @@ def resolve_site_app(home, app):
                env={}, seconds=min(app.seconds, needs["seconds"]), env_file=app.env_file, allow=allow,
                site=app.site, runtimes=app.runtimes, visitor_secrets=app.visitor_secrets, path=app.path)
     out.secrets = needs["secrets"]
+    out.storage_mb = needs["storage_mb"] if app.allow_storage else 0
     return out
 
 
@@ -305,6 +397,8 @@ class _Session:
         self.remote = None
         self.proc = self.master = self.scratch = self.proxy = None
         self.who = None
+        self.bye = False
+        self.data_in = self.limit = self.data_dir = None
         self.closed = threading.Event()
         RNS = net._rns()
         self.buf = RNS.Buffer.create_bidirectional_buffer(0, 0, link.get_channel(), self.on_ready)
@@ -408,7 +502,7 @@ class _Session:
                 try:
                     app = resolve_site_app(self.host.home, app)
                     sid = self.host.home.store().resolve(app.site)
-                    _write_all(self.buf, spec_line(self.host.home.store(), sid, app.visitor_secrets), self.alive)
+                    _write_all(self.buf, spec_line(self.host.home.store(), sid, app.visitor_secrets, app.storage_mb > 0), self.alive)
                 except ValueError as e:
                     return self.finish("cannot start %s: %s" % (want, e))
                 answer = self.read_line(timeout=180)
@@ -426,12 +520,19 @@ class _Session:
                         v = raw.get(k) if isinstance(raw, dict) else None
                         if isinstance(v, str) and 0 < len(v) <= 4096 and "\x00" not in v:
                             secrets[k] = v                      # only declared names, only in memory
+                if app.storage_mb > 0:
+                    line = self.read_line(timeout=180)
+                    if line is None or not line.startswith(DATA):
+                        return self.finish("expected the saved data")
+                    self.data_in = line[len(DATA):]
+                    self.limit = sync_limit(app.storage_mb)
             self.start(app, rows, cols, term, secrets)
             leftover, self.leftover = self.leftover, b""
             if leftover:
                 self.feed(leftover)
             end = time.time() + app.seconds
-            while self.alive() and time.time() < end and self.proc is not None and self.proc.poll() is None:
+            while self.alive() and time.time() < end and self.proc is not None and self.proc.poll() is None \
+                    and not self.bye:
                 try:
                     self.feed(self.inq.get(timeout=0.5))
                 except queue.Empty:
@@ -440,17 +541,40 @@ class _Session:
                 self.say("\n[session time limit reached]\n")
         finally:
             time.sleep(0.3)
+            self.save_back()
             self.close()
             try:
                 self.link.teardown()
             except Exception:
                 pass
 
+    def save_back(self):
+        """Send the app's data folder to the visitor so it is kept on their machine, not here."""
+        if not self.data_dir or self.link.status != net._rns().Link.ACTIVE:
+            return
+        p = self.proc
+        if p is not None and p.poll() is None:                   # the visitor left: let the app exit cleanly first
+            try:
+                os.killpg(p.pid, signal.SIGHUP)
+                p.wait(timeout=3)
+            except Exception:
+                pass
+        try:
+            blob = pack_dir(self.data_dir, self.limit)
+        except ValueError as e:
+            net.log("not saving: %s" % e)
+            return
+        _write_all(self.buf, SAVE + blob + b"\n", lambda: self.link.status == net._rns().Link.ACTIVE)
+        time.sleep(0.5)
+
     def finish(self, msg):
         self.say(msg + "\n")
         time.sleep(0.3)
 
     def feed(self, data):
+        if self.data_dir and ESCAPE in data:                     # visitor pressed Ctrl-]: finish and save
+            self.bye = True
+            return
         if self.master is not None:
             try:
                 os.write(self.master, data)
@@ -470,6 +594,16 @@ class _Session:
                     if eq and k and not k.startswith("#") and (app.secrets is None or k in app.secrets):
                         env[k] = v
         env.update(secrets or {})
+        if self.limit:
+            self.data_dir = os.path.join(self.scratch, "data")
+            os.makedirs(self.data_dir)
+            if self.data_in:
+                try:
+                    unpack_dir(self.data_in, self.data_dir, self.limit)
+                except Exception as e:
+                    net.log("ignoring bad saved data: %s" % e)
+            self.data_in = None
+            env["ALTERNET_DATA"] = "/work/data" if self.host.sandbox else self.data_dir
         if self.host.sandbox:
             argv, run_env, cwd = bwrap_argv(app, self.scratch, env), None, None
         else:
@@ -686,11 +820,31 @@ def connect(home, ref, timeout=30, retries=3):
     state = {"mode": "pre", "pre": b"", "spec_line": None}
     got = threading.Event()
 
+    demux, saved = Demux(), threading.Event()
+
     def emit(data):
-        data = filt.feed(data)
+        text, payload = demux.feed(data)
+        if payload is not None:
+            keep_saved(payload)
+        data = filt.feed(text)
         if data:
             out.write(data)
             out.flush()
+
+    def keep_saved(blob):
+        if not state.get("site") or not state.get("limit"):
+            return
+        try:
+            tmp = home.app_data_dir(state["site"]) + ".new"
+            shutil.rmtree(tmp, ignore_errors=True)
+            unpack_dir(blob, tmp, state["limit"])
+            final = home.app_data_dir(state["site"])
+            shutil.rmtree(final, ignore_errors=True)
+            os.rename(tmp, final)
+            saved.set()
+        except Exception as e:
+            sys.stderr.write("\r\nalternet: could not keep the app's data: %s\r\n" % e)
+            saved.set()
 
     def on_ready(n):
         data = buf.read(n) or b""
@@ -743,7 +897,8 @@ def connect(home, ref, timeout=30, retries=3):
             grants[site] = spec_digest(spec)
             home.save_app_grants(grants)
         _write_all(buf, GO + b"\n", lambda: True)
-        takes = bool(json.loads(state["spec_line"][len(SPEC):]).get("visitor_secrets"))
+        extras = json.loads(state["spec_line"][len(SPEC):])
+        takes = bool(extras.get("visitor_secrets"))
         if spec["needs"]["secrets"] and takes:
             import getpass
             vals = {}
@@ -752,6 +907,15 @@ def connect(home, ref, timeout=30, retries=3):
                 if v:
                     vals[name] = v
             _write_all(buf, SEC + json.dumps(vals).encode() + b"\n", lambda: True)
+        if spec["needs"]["storage_mb"] and extras.get("storage"):
+            state["site"], state["limit"] = site, sync_limit(spec["needs"]["storage_mb"])
+            mine = home.app_data_dir(site)
+            try:
+                blob = pack_dir(mine, state["limit"]) if os.path.isdir(mine) else b""
+            except ValueError as e:
+                link.teardown()
+                raise SystemExit("alternet: your saved data for this app is too big to send: %s" % e)
+            _write_all(buf, DATA + blob + b"\n", lambda: True)
         rest, state["pre"] = state["pre"], b""
         state["mode"] = "stream"
         if rest:
@@ -769,8 +933,13 @@ def connect(home, ref, timeout=30, retries=3):
             if select.select([fd], [], [], 0.2)[0]:
                 data = os.read(fd, 1024)
                 if not data or ESCAPE in data:
+                    if state.get("site"):                          # ask the host to finish and send our data back
+                        _write_all(buf, ESCAPE, lambda: link.status == RNS.Link.ACTIVE)
+                        saved.wait(20)
                     break
                 _write_all(buf, data, lambda: link.status == RNS.Link.ACTIVE)
+        if state.get("site") and link.status != RNS.Link.ACTIVE:    # the app ended by itself: its save may still be in flight
+            saved.wait(5)
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
         try:

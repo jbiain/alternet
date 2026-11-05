@@ -120,6 +120,10 @@ class Home:
         with open(self.grants_file, "w") as f:
             json.dump(g, f)
 
+    def app_data_dir(self, site):
+        """Where an app site's saved files live. They are yours: sent to a host for a session, then returned."""
+        return os.path.join(self.path, "app_data", site)
+
     @property
     def directories_file(self): return os.path.join(self.path, "directories.json")
 
