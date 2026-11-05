@@ -29,16 +29,44 @@ def _directory_lookup(home, name):
     return None
 
 
+class NameChanged(Exception):
+    """A shared directory now maps a name to a different site than the one first seen for it."""
+
+
+def _is_node_address(s):
+    return len(s) == 32 and all(c in "0123456789abcdef" for c in s.lower())
+
+
 def _expand(home, ref):
-    """Replace a name by the site reference it stands for: local petname first, then any subscribed
-    directory site's names.json (see `alternet directory`). Only the part before any @ADDRESS is a name."""
-    name, at, addr = ref.partition("@")
+    """Turn a human reference into a site reference. Forms: a local petname, a name from a subscribed
+    directory (pinned on first use: if the directory later points the name somewhere else you get a
+    NameChanged error instead of being silently redirected), NAME@OWNERTAG for a stored site, or a plain
+    site id. After an @ a 32-character value is a node ADDRESS; anything shorter is an owner tag."""
+    name, at, rest = ref.partition("@")
     if not home.exists():
         return ref
-    target = home.names().get(name.lower()) or _directory_lookup(home, name.lower())
+    name_l = name.lower()
+    if at and rest and not _is_node_address(rest):
+        try:
+            sid = home.store().find_named(name_l, rest.lower())
+        except ValueError as e:
+            raise NameChanged(str(e))
+        return sid or ref
+    target = home.names().get(name_l)
+    if not target:
+        target = _directory_lookup(home, name_l)
+        if target:
+            pins, sid = home.name_pins(), target.partition("@")[0]
+            if name_l in pins and pins[name_l] != sid:
+                raise NameChanged(
+                    "%r used to mean site %s, but a directory you follow now says %s. Not following it. "
+                    "If you trust the change: alternet name unpin %s" % (name_l, pins[name_l][:12], sid[:12], name_l))
+            if name_l not in pins:
+                pins[name_l] = sid
+                home.save_name_pins(pins)
     if not target:
         return ref
-    return target if not at else target.partition("@")[0] + "@" + addr
+    return target if not at else target.partition("@")[0] + "@" + rest
 
 
 def _site(home, ref):
@@ -97,7 +125,7 @@ def cmd_sites(a, home):
     for sid in store.sites():
         b = store.info(sid)
         flags = ("mine " if b["owner"] == me else "") + ("pinned " if sid in pins else "") + ("private" if b.get("access") == "private" else "")
-        print("%s  %-20s v%-3d %2d pages  %s" % (sid, b["name"], b["version"], len(b["files"]), flags.strip()))
+        print("%s  %-26s v%-3d %2d pages  %s" % (sid, sitelib.display_name(b), b["version"], len(b["files"]), flags.strip()))
 
 
 def cmd_ls(a, home):
@@ -164,6 +192,13 @@ def cmd_name(a, home):
     if not a.name:
         die("give a name")
     n = a.name.lower()
+    if a.action == "unpin":
+        pins = home.name_pins()
+        if pins.pop(n, None) is None:
+            die("%r is not pinned" % n)
+        home.save_name_pins(pins)
+        print("Unpinned %s: the next directory lookup will be trusted and pinned again" % n)
+        return
     if a.action == "rm":
         if names.pop(n, None) is None:
             die("no petname %r" % n)
@@ -458,8 +493,8 @@ def build_parser():
         (["--wait"], dict(type=float, default=15, help="seconds to wait for a peer")),
         (["--refresh"], dict(action="store_true", help="check the network for a newer version")),
         (["--offline"], dict(action="store_true", help="never touch the network"))])
-    add("name", cmd_name, "local petnames for sites: name add NAME SITE[@ADDR] | rm NAME | list", [
-        (["action"], dict(choices=["add", "rm", "list"])), (["name"], dict(nargs="?")), (["target"], dict(nargs="?")),
+    add("name", cmd_name, "local petnames for sites: name add NAME SITE[@ADDR] | rm NAME | list | unpin NAME (accept a changed directory name)", [
+        (["action"], dict(choices=["add", "rm", "list", "unpin"])), (["name"], dict(nargs="?")), (["target"], dict(nargs="?")),
         (["--force"], dict(action="store_true", help="replace an existing petname"))])
     add("directory", cmd_directory, "subscribe to a shared directory site (names.json) so its names "
         "resolve like petnames: directory add SITE[@ADDR] | rm SITE | list", [
@@ -510,5 +545,7 @@ def main(argv=None):
     a = build_parser().parse_args(argv)
     try:
         a.fn(a, Home(a.home))
+    except NameChanged as e:
+        die(str(e))
     except KeyboardInterrupt:
         sys.exit(130)

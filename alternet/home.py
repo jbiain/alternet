@@ -82,6 +82,18 @@ class Home:
             json.dump(names, f, indent=2, sort_keys=True)
 
     @property
+    def name_pins_file(self): return os.path.join(self.path, "name_pins.json")
+
+    def name_pins(self):
+        """First-use pins: {name: site id} for names learned from a shared directory."""
+        return _load(self.name_pins_file) if os.path.exists(self.name_pins_file) else {}
+
+    def save_name_pins(self, pins):
+        os.makedirs(self.path, exist_ok=True)
+        with open(self.name_pins_file, "w") as f:
+            json.dump(pins, f, indent=2, sort_keys=True)
+
+    @property
     def directories_file(self): return os.path.join(self.path, "directories.json")
 
     def directories(self):

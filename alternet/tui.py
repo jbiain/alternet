@@ -68,11 +68,14 @@ class Nav:
     def goto(self, ref):
         """Resolve something a person typed (petname, site id, SITE@NODE) to a history entry.
         Returns (entry, None) or (None, error message)."""
-        from .cli import _split_ref, _expand
+        from .cli import _split_ref, _expand, NameChanged
         ref = ref.strip()
         if not ref:
             return None, "type a site id, a name, or SITE@NODEADDRESS"
-        site, addr = _split_ref(_expand(self.home, ref))
+        try:
+            site, addr = _split_ref(_expand(self.home, ref))
+        except NameChanged as e:
+            return None, str(e)
         sid = self.store.resolve(site)
         if not sid and len(site) == 32 and all(c in "0123456789abcdef" for c in site.lower()):
             sid = site.lower()
@@ -82,8 +85,11 @@ class Nav:
 
     def follow(self, sid, target):
         """A target is another page in this site, or SITE/petname[@ADDR] for a different site."""
-        from .cli import _expand
-        expanded = _expand(self.home, target)
+        from .cli import _expand, NameChanged
+        try:
+            expanded = _expand(self.home, target)
+        except NameChanged:
+            return None
         t_sid, _, addr = expanded.partition("@")
         if len(t_sid) == 32 and all(c in "0123456789abcdef" for c in t_sid.lower()):
             return (t_sid, "index.md", addr or None)

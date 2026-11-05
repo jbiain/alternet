@@ -40,5 +40,8 @@ Combine 1, 3, 4 (and 2 later), in this order:
 This keeps the protocol free of any registry while giving normal people names they can read.
 
 ## Status
-Analysis only; nothing in this document is built yet. Petnames and shared directories already exist; the
-`name.xxxx` display is used on the 3D world's doors.
+Built (2026-11-05): `NAME@OWNERTAG` resolves a stored site (tag = first 6 characters of the owner key; a
+32-character value after `@` is still a node address); `alternet sites` and the 3D world show names that way;
+names learned from a shared directory are pinned on first use, and a later change is refused with an
+explanation until you run `alternet name unpin NAME`. Not built: a default directory for new users,
+domain-verified names, and resolving `NAME@OWNERTAG` for sites not yet stored locally.

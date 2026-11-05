@@ -16,6 +16,19 @@ def site_id(owner_pub: bytes, name: str) -> str:
     return hashlib.sha256(owner_pub + name.encode()).hexdigest()[:32]
 
 
+OWNER_TAG_LEN = 6
+
+
+def owner_tag(owner_hex):
+    """Short, readable tag for an owner key. Display and convenience only: short tags can collide, so the
+    full key stays the identity (see docs/012-names.md)."""
+    return owner_hex[:OWNER_TAG_LEN]
+
+
+def display_name(info):
+    return "%s@%s" % (info["name"], owner_tag(info["owner"]))
+
+
 def pack(directory, key, name, version, access="public", listed=False):
     blocks, files = {}, {}
     for root, _, fs in os.walk(directory):
@@ -144,6 +157,18 @@ class Store:
         if any(p is None for p in parts):
             raise ValueError("site is not fully stored locally")
         return b"".join(parts)
+
+    def find_named(self, name, tag):
+        """The one stored site called `name` whose owner key starts with `tag`; None if there is none.
+        Raises ValueError if the tag is not enough to tell two owners' sites apart."""
+        hits = []
+        for sid in self.sites():
+            b = self.info(sid)
+            if b["name"].lower() == name and b["owner"].startswith(tag):
+                hits.append(sid)
+        if len(hits) > 1:
+            raise ValueError("%s@%s is ambiguous; use a longer owner tag or the site id" % (name, tag))
+        return hits[0] if hits else None
 
     def resolve(self, prefix):
         """Accept a full site id or a unique prefix."""

@@ -392,3 +392,55 @@ class WorldPtyTests(unittest.TestCase):
             self.assertEqual(os.WEXITSTATUS(status), 0)
             self.assertIn("▀".encode(), seen)
             self.assertIn(b"walk up to a glowing door", seen)
+
+
+class NameTests(unittest.TestCase):
+    @staticmethod
+    def _publish(home, key, pages, name, version):
+        with tempfile.TemporaryDirectory() as d:
+            for fn, text in pages.items():
+                with open(os.path.join(d, fn), "w") as f:
+                    f.write(text)
+            m, blocks = sl.pack(d, key, name, version)
+        for bh, blk in blocks.items():
+            home.store().put_block(bh, blk)
+        home.store().put_manifest(m)
+        return m["body"]["site"]
+
+    def _home(self, tmp):
+        from alternet.home import Home
+        h = Home(tmp)
+        h.save_settings({"auto": False, "listen": [], "connect": [], "relay": False, "standalone": True, "trusted": []})
+        return h
+
+    def test_name_at_owner_tag_resolves_a_stored_site(self):
+        from alternet import cli
+        with tempfile.TemporaryDirectory() as tmp:
+            h = self._home(tmp)
+            alice = crypto.SigningKey.load_or_create(os.path.join(tmp, "alice.key"))
+            bob = crypto.SigningKey.load_or_create(os.path.join(tmp, "bob.key"))
+            sa = self._publish(h, alice, {"index.md": "a"}, "bbs", 1)
+            sb = self._publish(h, bob, {"index.md": "b"}, "bbs", 1)
+            tag_a = sl.owner_tag(alice.public_bytes().hex())
+            self.assertEqual(cli._expand(h, "bbs@" + tag_a), sa)
+            self.assertEqual(cli._expand(h, "bbs@" + sl.owner_tag(bob.public_bytes().hex())), sb)
+            self.assertEqual(sl.display_name(h.store().info(sa)), "bbs@" + tag_a)
+            node = "ab" * 16
+            self.assertEqual(cli._expand(h, sa + "@" + node), sa + "@" + node)     # 32 hex = node address, untouched
+
+    def test_directory_name_is_pinned_and_a_change_is_refused(self):
+        from alternet import cli
+        with tempfile.TemporaryDirectory() as tmp:
+            h = self._home(tmp)
+            owner = crypto.SigningKey.load_or_create(os.path.join(tmp, "o.key"))
+            s1 = self._publish(h, owner, {"index.md": "one"}, "one", 1)
+            s2 = self._publish(h, owner, {"index.md": "two"}, "two", 1)
+            dsid = self._publish(h, owner, {"names.json": json.dumps({"hello": s1})}, "dir", 1)
+            h.save_directories([dsid])
+            self.assertEqual(cli._expand(h, "hello"), s1)
+            self.assertEqual(h.name_pins()["hello"], s1)
+            self._publish(h, owner, {"names.json": json.dumps({"hello": s2})}, "dir", 2)   # directory swaps the name
+            with self.assertRaises(cli.NameChanged):
+                cli._expand(h, "hello")
+            pins = h.name_pins(); pins.pop("hello"); h.save_name_pins(pins)               # what `name unpin` does
+            self.assertEqual(cli._expand(h, "hello"), s2)

@@ -2,7 +2,7 @@
 Doom-era games used). Each site you hold, or have a name for, is a door in the walls; walk up to one and
 press Enter to open it. Pure standard library: see gfx.py for the half-block pixel output."""
 import math, shutil, sys
-from . import gfx
+from . import gfx, site as sitelib
 
 MAP = [
     "#1##2##3##4##5###",
@@ -161,7 +161,7 @@ def doors_for(home):
         if sid in seen:
             continue
         info = store.info(sid)
-        doors.append(("%s.%s" % (info["name"], sid[:4]), sid))
+        doors.append((sitelib.display_name(info), sid))
     return doors
 
 
