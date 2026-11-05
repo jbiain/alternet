@@ -48,12 +48,16 @@ def _pipe(a, b):
 
 
 class AllowProxy:
-    def __init__(self, sock_path, allow, log=lambda *a: None):
+    def __init__(self, sock_path, allow, log=lambda *a: None, listener=None):
+        """Serve on a unix socket at sock_path, or on `listener` (an already listening TCP socket)."""
         self.allow, self.log = list(allow), log
-        self.srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.srv.bind(sock_path)
-        os.chmod(sock_path, 0o600)
-        self.srv.listen(16)
+        if listener is not None:
+            self.srv = listener
+        else:
+            self.srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.srv.bind(sock_path)
+            os.chmod(sock_path, 0o600)
+            self.srv.listen(16)
         self.running = True
         threading.Thread(target=self._accept, daemon=True).start()
 

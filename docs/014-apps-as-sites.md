@@ -1,6 +1,7 @@
 # 014 — Apps as sites (design, not built)
 
-Status: agreed direction. Nothing here is implemented except what 013 and `apphost.py` already do.
+Status: steps 1-6 built (`appspec.py`, `apphost.py`, `localrun.py`). Local execution is tested on macOS (Seatbelt);
+the Linux path reuses the hosted bubblewrap sandbox but has not been run locally yet. Windows is refused (no sandbox).
 
 ## Idea
 A site is pages plus, optionally, an app. Both are the same signed, content-addressed, replicated object,

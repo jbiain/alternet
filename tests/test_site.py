@@ -734,3 +734,21 @@ class StorageSyncTests(unittest.TestCase):
             text += t
             got = got or p
         self.assertEqual((text, got), (b"screen textafter", b"PAYLOAD"))     # output after the save line still shows
+
+
+class LocalRunTests(unittest.TestCase):
+    def test_seatbelt_profile_denies_by_default(self):
+        from alternet.localrun import seatbelt_profile
+        p = seatbelt_profile(["/opt/app"], ["/tmp/scratch"], 4321)
+        self.assertIn("(deny default)", p)
+        self.assertIn('(subpath "/tmp/scratch")', p)
+        self.assertIn("localhost:4321", p)
+        self.assertNotIn("network*", p)                                   # no blanket network permission
+        self.assertNotIn("localhost", seatbelt_profile([], [], None))      # no proxy: no network at all
+        self.assertNotIn("/Users", p)                                      # home directory is never granted
+
+    def test_data_bind_in_bwrap(self):
+        from alternet.apphost import App, bwrap_argv
+        argv = bwrap_argv(App("a", ["x"]), "/s", {}, data="/home/u/data")
+        i = argv.index("/work/data")
+        self.assertEqual((argv[i - 2], argv[i - 1]), ("--bind", "/home/u/data"))

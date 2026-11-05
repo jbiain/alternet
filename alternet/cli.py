@@ -383,6 +383,12 @@ def cmd_app_serve(a, home):
         die(str(e))
 
 
+def cmd_run(a, home):
+    from . import localrun
+    home.require()
+    localrun.run(home, a.site)
+
+
 def cmd_open(a, home):
     from . import apphost
     home.require()
@@ -636,6 +642,8 @@ def build_parser():
         (["--no-sandbox"], dict(action="store_true", help="run apps unconfined (only on a machine you can afford to expose)")),
         (["--max"], dict(type=int, default=4, help="most simultaneous sessions (default 4)")),
         (["command"], dict(nargs=argparse.REMAINDER, help="-- COMMAND [ARGS...]"))])
+    add("run", cmd_run, "run an app site on THIS machine in an OS sandbox (the host never sees your data)", [
+        (["site"], dict(help="site id, name, or SITE@NODEADDRESS"))])
     add("open", cmd_open, "connect to a served terminal app by its address", [
         (["address"], dict(help="ADDRESS or ADDRESS/APP, from app-serve"))])
     add("gc", cmd_gc, "drop the least recently used unpinned sites until the store fits a size limit", [

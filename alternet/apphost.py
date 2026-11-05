@@ -323,7 +323,7 @@ def resolve_site_app(home, app):
     return out
 
 
-def bwrap_argv(app, scratch, env):
+def bwrap_argv(app, scratch, env, data=None):
     """The bubblewrap command line that confines one session. Pure function: easy to test."""
     b = ["bwrap", "--die-with-parent", "--new-session", "--unshare-all", "--clearenv"]
     if app.net and not app.allow:
@@ -340,6 +340,8 @@ def bwrap_argv(app, scratch, env):
     for p in app.ro:
         b += ["--ro-bind", p, p]
     b += ["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--bind", scratch, "/work"]
+    if data:
+        b += ["--bind", data, "/work/data"]
     chdir = "/work"
     if app.cwd:
         b += ["--ro-bind", os.path.abspath(app.cwd), "/app"]
