@@ -298,6 +298,25 @@ def cmd_view(a, home):
         die("cannot show image: %s" % e)
 
 
+def cmd_pixeltest(a, home):
+    """Show a small test image with each inline-image protocol, so you can see which your terminal draws."""
+    from . import canvas
+    c = canvas.Canvas(320, 96, (10, 14, 40))
+    c.vgradient(0, 0, 320, 96, (20, 60, 160), (140, 40, 160))
+    c.text(20, 36, "IMAGE OK", (255, 255, 255), 4)
+    png = c.png()
+    print("TERM=%s  TERM_PROGRAM=%s" % (os.environ.get("TERM"), os.environ.get("TERM_PROGRAM")))
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        raw = canvas.raw_probe()
+        print("terminal answered the capability probe with: %r" % raw)
+        print("=> probe result: %s" % canvas.parse_probe(raw))
+    for proto, label in (("iterm", "iTerm2 protocol (VS Code, iTerm2, WezTerm)"), ("kitty", "Kitty protocol (Kitty, Ghostty, WezTerm)")):
+        print("\n%s - you should see a blue/purple box saying IMAGE OK on the next lines:" % label)
+        print(canvas.encode_image(png, proto, 40, 6))
+        print("\n" * 6)
+    print("If neither box appeared, this terminal cannot show inline images.")
+
+
 def cmd_tour(a, home):
     from . import tour
     sys.exit(tour.run(fast=a.fast))
@@ -483,6 +502,7 @@ def build_parser():
     add("view", cmd_view, "show a PNG (a file, or a page of a stored site) in the terminal", [
         (["source"], dict(help="a PNG file, or a site id/name")),
         (["page"], dict(nargs="?", help="page name inside the site"))])
+    add("pixeltest", cmd_pixeltest, "show a test image per protocol to find out if this terminal can draw images", [])
     add("tour", cmd_tour, "a narrated demo: publish, replicate, reject tampering, survive the publisher going offline",
         [(["--fast"], dict(action="store_true", help="no pauses"))])
     add("gateway", cmd_gateway, "serve Alternet sites to an ordinary web browser (read-only; fetches any "
