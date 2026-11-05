@@ -2,7 +2,7 @@
 borders and bitmap-font text, plus ways to show the result in a terminal that can display images (the
 Kitty graphics protocol and the iTerm2 inline-image protocol, also understood by WezTerm, Ghostty and others).
 Standard library only. A colour is an (r, g, b) tuple."""
-import base64, os, struct, zlib
+import base64, os, re, struct, sys, time, zlib
 
 # 5x7 font, 7 rows per glyph, 5 bits per row (bit 4 = leftmost). ASCII 32..126.
 _FONT_ROWS = """
@@ -123,3 +123,37 @@ def encode_image(png, protocol, cols, rows):
 
 
 KITTY_CLEAR = "\033_Ga=d,q=2\033\\"
+
+
+def probe(timeout=0.7):
+    """Ask the terminal what it can show, instead of guessing: a Kitty-graphics query, an XTVERSION query and a
+    Device Attributes request (which every terminal answers last, so its reply means 'done'). Returns 'kitty',
+    'iterm' or None. Needs a tty; leaves it as it found it."""
+    import select, termios, tty
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    buf = b""
+    try:
+        tty.setraw(fd)
+        sys.stdout.write("\033_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\033\\\033[>0q\033[c")
+        sys.stdout.flush()
+        end = time.time() + timeout
+        while time.time() < end and not re.search(rb"\033\[\?[0-9;]*c", buf):
+            if select.select([fd], [], [], 0.05)[0]:
+                buf += os.read(fd, 4096)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    return parse_probe(buf)
+
+
+def parse_probe(buf):
+    if b"_Gi=31;OK" in buf:
+        return "kitty"
+    xt = re.search(rb"\033P>\|([^\033]*)\033\\", buf)
+    da = re.search(rb"\033\[\?([0-9;]*)c", buf)
+    sixel = bool(da) and b"4" in da.group(1).split(b";")
+    if xt:
+        name = xt.group(1)
+        if b"iTerm2" in name or b"WezTerm" in name or (b"xterm.js" in name and sixel):
+            return "iterm"
+    return None
