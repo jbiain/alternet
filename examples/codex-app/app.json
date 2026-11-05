@@ -1,0 +1,23 @@
+{
+ "app": 1,
+ "title": "Codex (bring your own OpenAI key)",
+ "runtime": "native",
+ "run": [
+  "sh",
+  "-c",
+  "printenv OPENAI_API_KEY | codex login --with-api-key >/dev/null 2>&1; exec codex --no-daemon --dangerously-bypass-approvals-and-sandbox"
+ ],
+ "needs": {
+  "secrets": [
+   "OPENAI_API_KEY"
+  ],
+  "net": [
+   "api.openai.com",
+   ".openai.com",
+   "chatgpt.com",
+   ".chatgpt.com"
+  ],
+  "storage_mb": 0,
+  "seconds": 3600
+ }
+}

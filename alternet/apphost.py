@@ -118,15 +118,16 @@ class OutputFilter:
 
 # ---------------------------------------------------------------- spec handshake (docs/014)
 SPEC = b"ALTSPEC "           # host -> client, one line, before a site app starts: signed manifest + app.json blocks
+SEC = b"ALTSEC "             # client -> host after GO: {"NAME": "value"} for the secrets the app declared
 GO, NO = b"ALTGO", b"ALTNO"   # client -> host: the visitor accepted / declined the permissions
 
 
-def spec_line(store, sid):
+def spec_line(store, sid, visitor_secrets=False):
     """What the host sends so the client can verify the permissions itself instead of trusting the host."""
     import base64
     body = store.info(sid)
     blocks = {h: base64.b64encode(store.get_block(h)).decode() for h in body["files"]["app.json"]}
-    return SPEC + json.dumps({"manifest": store.get_manifest(sid), "blocks": blocks}).encode() + b"\n"
+    return SPEC + json.dumps({"manifest": store.get_manifest(sid), "blocks": blocks, "visitor_secrets": bool(visitor_secrets)}).encode() + b"\n"
 
 
 def parse_spec_line(line, expect_site=None):
@@ -157,13 +158,16 @@ def spec_digest(spec):
 # ---------------------------------------------------------------- host-side config and sandbox
 class App:
     def __init__(self, name, cmd, cwd=None, access="public", net=False, ro=(), env=None, seconds=MAX_SESSION_SECONDS,
-                 env_file=None, allow=(), site=None, runtimes=("python3",), grant_net=False):
+                 env_file=None, allow=(), site=None, runtimes=("python3",), grant_net=False,
+                 visitor_secrets=False, path=()):
         if access not in ("public", "trusted"):
             raise ValueError("app %r: access must be 'public' or 'trusted'" % name)
         if not cmd and not site:
             raise ValueError("app %r has no command or site" % name)
         self.name, self.cmd, self.cwd, self.access = name, list(cmd or []), cwd, access
         self.net, self.ro, self.env, self.seconds = bool(net), list(ro), dict(env or {}), int(seconds)
+        self.visitor_secrets = bool(visitor_secrets)   # visitors supply the secrets the app declares (memory only)
+        self.path = list(path)                          # extra host directories on the app's PATH (put them in `ro` too)
         self.secrets = None                # for site apps: the only env_file names the app declared it needs
         self.site, self.runtimes, self.grant_net = site, tuple(runtimes), bool(grant_net)   # site: serve the app stored under this site id
         self.allow = list(allow)           # hostnames ("api.openai.com", ".openai.com") reachable on 443 via the proxy
@@ -180,7 +184,8 @@ def load_apps(home):
         raw = json.load(f).get("apps", {})
     return {n: App(n, d.get("cmd"), d.get("cwd"), d.get("access", "public"), d.get("net", False),
                    d.get("ro", ()), d.get("env"), d.get("seconds", MAX_SESSION_SECONDS), d.get("env_file"), d.get("allow", ()),
-                   d.get("site"), d.get("runtimes", ("python3",)), d.get("grant_net", False)) for n, d in raw.items()}
+                   d.get("site"), d.get("runtimes", ("python3",)), d.get("grant_net", False),
+                   d.get("visitor_secrets", False), d.get("path", ())) for n, d in raw.items()}
 
 
 def resolve_site_app(home, app):
@@ -221,7 +226,7 @@ def resolve_site_app(home, app):
     allow = needs["net"] if (needs["net"] and app.grant_net) else []
     out = App(app.name, run, cwd=root, access=app.access, net=bool(allow), ro=app.ro,
                env={}, seconds=min(app.seconds, needs["seconds"]), env_file=app.env_file, allow=allow,
-               site=app.site, runtimes=app.runtimes)
+               site=app.site, runtimes=app.runtimes, visitor_secrets=app.visitor_secrets, path=app.path)
     out.secrets = needs["secrets"]
     return out
 
@@ -254,7 +259,7 @@ def bwrap_argv(app, scratch, env):
         proxy = "http://127.0.0.1:3128"
         env = dict(env, HTTPS_PROXY=proxy, https_proxy=proxy, ALL_PROXY=proxy, NO_PROXY="")
         cmd = ["sh", "-c", 'python3 /alt/netproxy.py /work/.proxy.sock 3128 & exec "$@"', "sh"] + app.cmd
-    env = dict(env, HOME="/work", PATH="/usr/local/bin:/usr/bin:/bin", LANG="C.UTF-8")
+    env = dict(env, HOME="/work", PATH=":".join(list(app.path) + ["/usr/local/bin", "/usr/bin", "/bin"]), LANG="C.UTF-8")
     for k, v in env.items():
         b += ["--setenv", k, v]
     return b + ["--"] + cmd
@@ -299,6 +304,7 @@ class _Session:
         self.inq = queue.Queue()
         self.remote = None
         self.proc = self.master = self.scratch = self.proxy = None
+        self.who = None
         self.closed = threading.Event()
         RNS = net._rns()
         self.buf = RNS.Buffer.create_bidirectional_buffer(0, 0, link.get_channel(), self.on_ready)
@@ -387,17 +393,40 @@ class _Session:
                 who = self.remote.hash.hex() if self.remote is not None else "unknown"
                 net.log("refused %s for app %s" % (who, want))
                 return self.finish("%s is for trusted peers only. Ask the host to run: alternet trust %s" % (want, who))
+            secrets = {}
+            if app.visitor_secrets:
+                end0 = time.time() + 5
+                while self.remote is None and time.time() < end0 and self.alive():
+                    time.sleep(0.1)
+                if self.remote is None:
+                    return self.finish("this app needs you to identify yourself (use the alternet client)")
+                self.who = self.remote.hash.hex()
+                if self.who in self.host.active:
+                    return self.finish("you already have a session running on this app")
+                self.host.active.add(self.who)
             if app.site:
                 try:
                     app = resolve_site_app(self.host.home, app)
                     sid = self.host.home.store().resolve(app.site)
-                    _write_all(self.buf, spec_line(self.host.home.store(), sid), self.alive)
+                    _write_all(self.buf, spec_line(self.host.home.store(), sid, app.visitor_secrets), self.alive)
                 except ValueError as e:
                     return self.finish("cannot start %s: %s" % (want, e))
                 answer = self.read_line(timeout=180)
                 if answer is None or not answer.startswith(GO):
                     return self.finish("permissions not accepted")
-            self.start(app, rows, cols, term)
+                if app.visitor_secrets:
+                    line = self.read_line(timeout=60)
+                    if line is None or not line.startswith(SEC):
+                        return self.finish("expected the secrets")
+                    try:
+                        raw = json.loads(line[len(SEC):])
+                    except ValueError:
+                        return self.finish("bad secrets")
+                    for k in (app.secrets or []):
+                        v = raw.get(k) if isinstance(raw, dict) else None
+                        if isinstance(v, str) and 0 < len(v) <= 4096 and "\x00" not in v:
+                            secrets[k] = v                      # only declared names, only in memory
+            self.start(app, rows, cols, term, secrets)
             leftover, self.leftover = self.leftover, b""
             if leftover:
                 self.feed(leftover)
@@ -428,7 +457,7 @@ class _Session:
             except OSError:
                 pass
 
-    def start(self, app, rows, cols, term):
+    def start(self, app, rows, cols, term, secrets=None):
         import fcntl, pty, struct, termios
         self.scratch = tempfile.mkdtemp(prefix="s-", dir=self.host.scratch_root)
         os.chmod(self.scratch, 0o700)
@@ -440,6 +469,7 @@ class _Session:
                     k, eq, v = ln.strip().partition("=")
                     if eq and k and not k.startswith("#") and (app.secrets is None or k in app.secrets):
                         env[k] = v
+        env.update(secrets or {})
         if self.host.sandbox:
             argv, run_env, cwd = bwrap_argv(app, self.scratch, env), None, None
         else:
@@ -467,6 +497,8 @@ class _Session:
 
     def close(self):
         self.closed.set()
+        if self.who:
+            self.host.active.discard(self.who)
         p, self.proc = self.proc, None
         if p is not None:
             if p.poll() is None:
@@ -502,6 +534,7 @@ class Host:
         shutil.rmtree(self.scratch_root, ignore_errors=True)       # leftovers from a crash
         os.makedirs(self.scratch_root, mode=0o700)
         self.sessions = []
+        self.active = set()                       # identities holding a visitor-secrets session
 
 
 def _announce_data(home, apps):
@@ -710,6 +743,15 @@ def connect(home, ref, timeout=30, retries=3):
             grants[site] = spec_digest(spec)
             home.save_app_grants(grants)
         _write_all(buf, GO + b"\n", lambda: True)
+        takes = bool(json.loads(state["spec_line"][len(SPEC):]).get("visitor_secrets"))
+        if spec["needs"]["secrets"] and takes:
+            import getpass
+            vals = {}
+            for name in spec["needs"]["secrets"]:
+                v = os.environ.get(name) or getpass.getpass("%s (sent to the host for this session only): " % name)
+                if v:
+                    vals[name] = v
+            _write_all(buf, SEC + json.dumps(vals).encode() + b"\n", lambda: True)
         rest, state["pre"] = state["pre"], b""
         state["mode"] = "stream"
         if rest:
