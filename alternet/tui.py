@@ -706,26 +706,19 @@ def run(home, ref, force_plain=False, mode=None):
     nav = Nav(home)
     if force_plain:
         mode = "plain"
-    import os as _os
-    interactive = HAVE_RAWTTY and sys.stdin.isatty() and sys.stdout.isatty()
-    truecolor = _os.environ.get("COLORTERM", "").lower() in ("truecolor", "24bit")
-    proto = None
-    from . import canvas
-    if mode == "pixel" or (mode is None and interactive and canvas.detect_protocol()):
-        forced = _os.environ.get("ALTERNET_PIXEL", "").lower()
-        proto = forced if forced in ("kitty", "iterm") else (canvas.probe() if interactive else None)
-        if proto:
-            mode = "pixel"
-        else:
-            if mode == "pixel":
-                print("This terminal did not say it can show images, so the pixel screen would stay blank.\n"
-                      "Using the text screen instead. (If you know it can, force it: ALTERNET_PIXEL=iterm "
-                      "or ALTERNET_PIXEL=kitty)")
-            mode = None
     if mode is None:
-        mode = "fancy" if (interactive and truecolor) else (
-            "curses" if HAVE_CURSES else ("raw" if (HAVE_RAWTTY and sys.stdin.isatty()) else "plain"))
+        import os as _os
+        truecolor = _os.environ.get("COLORTERM", "").lower() in ("truecolor", "24bit")
+        from .canvas import detect_protocol
+        if HAVE_RAWTTY and sys.stdin.isatty() and sys.stdout.isatty() and detect_protocol():
+            mode = "pixel"
+        elif HAVE_RAWTTY and truecolor and sys.stdin.isatty() and sys.stdout.isatty():
+            mode = "fancy"
+    if mode is None:
+        mode = "curses" if HAVE_CURSES else ("raw" if (HAVE_RAWTTY and sys.stdin.isatty()) else "plain")
     if mode == "pixel" and HAVE_RAWTTY:
+        from .canvas import detect_protocol
+        proto = detect_protocol() or detect_protocol("iterm")
         PixelBrowser(nav, proto).run(sid, addr)
     elif mode == "fancy" and HAVE_RAWTTY:
         FancyBrowser(nav).run(sid, addr)
