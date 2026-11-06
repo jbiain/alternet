@@ -168,6 +168,36 @@ alternet read <Site ID> --offline
 ```
 Import verifies the signature and every block first and stores nothing if anything is wrong.
 
+## Demo 7: terminal apps and apps as sites
+
+A site that contains an `app.json` is an app. Its files are signed like any site, and the host or your own
+machine runs it in an OS sandbox (bubblewrap on Linux, Seatbelt on macOS): read-only system, private `/tmp`,
+no network unless the app asks and the host or you allow named hosts. Design: `docs/014-apps-as-sites.md`;
+security model: `docs/013-security.md`.
+
+```
+# host: one address that serves apps (each visitor gets their own sandboxed copy)
+alternet app-serve --name chat --access public python3 app4.py
+# visitor: open it from anywhere (Ctrl-] disconnects)
+alternet open ADDRESS                 # or SITE@ADDRESS, or a bare SITE id
+# run an app site on your own machine, sandboxed
+alternet run SITE
+```
+Visitors see what the app will do (runtime, network hosts, storage) and approve it before it runs. Secrets such
+as an API key are typed by the visitor, held in memory only and never stored by the host. Per-app storage is
+kept on the visitor's side (up to 8 MB). Terminal output is filtered so an app cannot use escape sequences to
+read your clipboard or query your terminal.
+
+## Demo 8: sharing connectivity and keeping storage in check
+
+```
+alternet relay                        # forward traffic for others (share your WiFi/connection)
+alternet relays [--add HOST:PORT]     # list known relays; `start` joins up to 3 of them
+alternet gc --limit 500               # drop least-recently-used sites until under 500 MB
+```
+Pages can embed images (`![](logo.png)`) and simple forms (`:input`, `:check`, `:calc`); form values stay on
+your machine. Sites you have read are cached, so they work offline (`sites` marks each as offline-ok or PARTIAL).
+
 ## Commands
 
 | Command | Purpose |
@@ -185,6 +215,11 @@ Import verifies the signature and every block first and stores nothing if anythi
 | `trust PEERID` / `untrust PEERID` / `trusted` | manage who may read your private sites |
 | `address` | show your node address and peer id |
 | `id` | show your owner public key |
+| `app-serve [--name N] [--access public|trusted] [--net HOSTS] CMD...` | serve a sandboxed terminal app on its own address |
+| `open ADDR[/APP]` / `SITE@ADDR` / `SITE` | connect to a hosted app |
+| `run SITE` | run an app site locally in an OS sandbox |
+| `relay` / `relays [--add]` | act as a relay / list known relays |
+| `gc --limit MB` | evict least-recently-used sites |
 
 Network changes take effect when you restart `alternet node`. Site arguments accept a unique ID prefix
 for local sites; use the full 32 characters to fetch a new site.
@@ -209,7 +244,8 @@ python -m unittest tests.test_network       # about 4 minutes: three_nodes.py, p
 - **Relays you do not control may stop forwarding your announcements.** Reticulum relays rate-limit announces per destination (default 1 per hour with 5 spare) and then block that node for about an hour. Alternet nodes announce politely (short burst at start, on changes, then every 30 s by default) and relays set up with `init --relay` relax the limit, but a stock Reticulum relay may still block you. `SITEID@NODEADDRESS` does not depend on announcements, so use it with third-party relays.
 - **No names.** Sites are identified by a 32-character hex ID. There is no discovery or search beyond what connected peers announce.
 - A node announces at most 8 sites. Pins fetch updates only while `alternet node` runs.
-- Old blocks are not garbage-collected after you publish a new version.
+- Old blocks are not garbage-collected after you publish a new version (`alternet gc` evicts whole sites by last use).
+- **Apps:** sandboxing needs bubblewrap on Linux (Ubuntu 24.04 also needs an AppArmor `userns` profile) or macOS Seatbelt; Windows is refused. No per-session CPU/memory limits yet. Apps with shared live state (chat rooms, games) are not solved.
 - Several nodes on one machine: use `init --standalone` and different `--home` directories, as the demos do. In the default shared mode, two different homes on one machine confuse Reticulum's local instance.
 - Phones: iOS has no auto-discovery and suspends apps in the background; treat phones as clients and occasional peers.
 - Pure-Python Ed25519 (used when `cryptography` is missing) is slower and not hardened against timing attacks.
