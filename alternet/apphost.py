@@ -935,7 +935,7 @@ def connect(home, ref, timeout=30, retries=3):
         dh = listener.hosts.get(want_site)
         if dh is None and early:
             dh = bytes.fromhex(ref)
-            appname = ""
+            appname, want_site = "", None            # it is an address, not a site id: accept whatever site the host serves
             print("No site announce seen; trying %s as a host address ..." % ref, file=sys.stderr)
         if dh is None:
             raise SystemExit("alternet: no host announced this app yet (hosts announce every 2 minutes). "
