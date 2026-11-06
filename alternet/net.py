@@ -62,6 +62,8 @@ class Session:
         self.dest = RNS.Destination(self.identity, RNS.Destination.IN, RNS.Destination.SINGLE, APP, ASPECT)
         self.dest.register_request_handler("/manifest", self._h_manifest, RNS.Destination.ALLOW_ALL)
         self.dest.register_request_handler("/block", self._h_block, RNS.Destination.ALLOW_ALL)
+        self.dest.register_request_handler("/feedids", self._h_feedids, RNS.Destination.ALLOW_ALL)
+        self.dest.register_request_handler("/feedget", self._h_feedget, RNS.Destination.ALLOW_ALL)
 
     # --- serving ---
     def _trusted(self, remote_identity):
@@ -87,6 +89,43 @@ class Session:
             return blk
         except Exception:
             return None
+
+    def _h_feedids(self, path, data, rid, lid, ri, t):
+        try:
+            return json.dumps(self.home.feeds().ids(data.decode())).encode()
+        except Exception:
+            return None
+
+    def _h_feedget(self, path, data, rid, lid, ri, t):
+        try:
+            room, _, eid = data.decode().partition("\n")
+            e = self.home.feeds().get(room, eid)
+            return json.dumps(e).encode() if e else None
+        except Exception:
+            return None
+
+    def sync_feed(self, room, addr_hex, timeout=20):
+        """Pull the entries of `room` that we lack from the node at addr_hex. Every entry is verified before it
+        is stored. Returns (new entries stored, rejected). Raises ValueError if the node cannot be reached."""
+        from . import feed
+        dh, ident = self._recall(addr_hex, timeout)
+        if ident is None:
+            raise ValueError("could not find %s on the network" % addr_hex)
+        raw = self._request(ident, dh, "/feedids", room.encode())
+        if raw is None:
+            raise ValueError("that node did not answer")
+        feeds, new, bad = self.home.feeds(), 0, 0
+        have = set(feeds.ids(room))
+        for eid in [i for i in json.loads(raw) if i not in have][:feed.MAX_ENTRIES]:
+            blob = self._request(ident, dh, "/feedget", ("%s\n%s" % (room, eid)).encode())
+            try:
+                e = json.loads(blob)
+                if feed.verify_entry(e, room)[0] != eid:
+                    raise ValueError("id mismatch")
+                new += 1 if feeds.put(e, room) else 0
+            except (ValueError, TypeError):
+                bad += 1
+        return new, bad
 
     def catalog(self):
         cat = {}
@@ -127,9 +166,8 @@ class Session:
         link.teardown()
         return box.get("v")
 
-    def add_hint(self, sid, addr_hex, timeout=15):
-        """Learn a holder from its address instead of waiting for its announce: ask the network for a
-        path (a Reticulum path request). Works through relays even when announces do not arrive."""
+    def _recall(self, addr_hex, timeout=15):
+        """(destination hash, identity) of the node at addr_hex, asking the network for a path if needed."""
         RNS = self.RNS
         try:
             dh = bytes.fromhex(addr_hex)
@@ -144,6 +182,12 @@ class Session:
             while not RNS.Transport.has_path(dh) and time.time() - t < timeout:
                 time.sleep(0.3)
             ident = RNS.Identity.recall(dh)
+        return dh, ident
+
+    def add_hint(self, sid, addr_hex, timeout=15):
+        """Learn a holder from its address instead of waiting for its announce: ask the network for a
+        path (a Reticulum path request). Works through relays even when announces do not arrive."""
+        dh, ident = self._recall(addr_hex, timeout)
         if ident is None:
             return False
         self.listener.seen.setdefault(sid, {})[dh] = (ident, 10 ** 9)   # version unknown: always ask

@@ -1,6 +1,6 @@
 # 015: Shared live state (collaborative apps)
 
-Status: steps 1 and 2 built (shared directory in the host, demo room app). Steps 3 and 4 not built.
+Status: steps 1 and 2 built (shared directory in the host, demo room app). Step 4 (signed feeds) built; step 3 (shared session) not built.
 
 ## Problem
 Each visitor to a hosted app gets an isolated sandbox. That is right for security, but it means apps cannot be
@@ -30,6 +30,16 @@ turn order do not, and stay on a single host.
 2. A demo chat room app using `/work/shared`, deployed on the VPS.
 3. Shared session attach (optional).
 4. Signed feeds: format in docs/004 style, `alternet feed` commands, sync through the existing block transfer.
+
+## As built (step 4: signed feeds)
+- `alternet feed post ROOM TEXT`, `feed read ROOM`, `feed sync ROOM NODEADDRESS`, `feed rooms`. Code: `alternet/feed.py`.
+- An entry is `{body: {v, room, author, t, text, prev}, sig}`; its id is the SHA-256 of the canonical body. `prev` names the
+  entries the author had seen. Limits: 1000 characters, 8 prev ids, 2000 entries per room, timestamps at most a day ahead.
+- `alternet node` serves feeds it holds (`/feedids`, `/feedget`). `sync` pulls what you lack, verifying every entry.
+  Rooms are found by node address (like `SITE@NODEADDRESS`), not announced.
+- Order: after everything named in `prev`, then timestamp, then id, so every replica shows the same order.
+- Not done: spam control (anyone can post to a room; moderation lists), encryption, announcing rooms, connecting the
+  `room` app to feeds so its host mirrors messages, pruning old entries.
 
 ## Risks
 - A public shared directory can be filled or vandalised: quota and per-visitor write limits, and apps validate input.

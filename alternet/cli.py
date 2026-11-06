@@ -1,5 +1,5 @@
 """alternet command-line interface."""
-import argparse, json, os, sys
+import argparse, json, os, sys, time
 from . import __version__, site as sitelib, crypto
 from .home import Home
 
@@ -571,6 +571,46 @@ def cmd_untrust(a, home):
     print("No longer trusted:", pid)
 
 
+def cmd_feed(a, home):
+    from . import feed
+    home.require()
+    feeds = home.feeds()
+    act, args = a.action, a.args
+    if act == "rooms":
+        for r in feeds.rooms():
+            print("%-24s %d message(s)" % (r, len(feeds.ids(r))))
+        return
+    if not args:
+        die("give a room name")
+    room = args[0].lower()
+    if act == "post":
+        if len(args) < 2:
+            die("give the message: alternet feed post ROOM TEXT")
+        try:
+            e = feed.make_entry(home.key(), room, " ".join(args[1:]), feeds.heads(room))
+            feeds.put(e, room)
+        except ValueError as ex:
+            die(str(ex))
+        print("Posted to %s (author %s)" % (room, e["body"]["author"][:8]))
+    elif act == "read":
+        for eid, e in feeds.entries(room):
+            b = e["body"]
+            print("%s %s  %s" % (time.strftime("%Y-%m-%d %H:%M", time.localtime(b["t"])), b["author"][:8], b["text"]))
+        if not feeds.ids(room):
+            print("(no messages; post one or sync from a node: alternet feed sync %s NODEADDRESS)" % room)
+    elif act == "sync":
+        if len(args) < 2:
+            die("give the node address: alternet feed sync ROOM NODEADDRESS")
+        from . import net
+        try:
+            new, bad = net.Session(home).sync_feed(room, args[1])
+        except ValueError as ex:
+            die(str(ex))
+        print("%d new message(s), %d rejected" % (new, bad))
+    else:
+        die("unknown action")
+
+
 def cmd_trusted(a, home):
     home.require()
     t = home.settings()["trusted"]
@@ -652,6 +692,9 @@ def build_parser():
         (["--port"], dict(type=int, default=4242, help="TCP port to accept connections on (default 4242)")),
         (["--join"], dict(help="HOST:PORT of another relay to connect to (default: none)")),
         (["--no-mirror"], dict(action="store_true", help="do not pin the landing BBS"))])
+    add("feed", cmd_feed, "signed shared message rooms: post, read, sync with another node, list rooms", [
+        (["action"], dict(choices=["post", "read", "sync", "rooms"])),
+        (["args"], dict(nargs="*", help="ROOM [TEXT... | NODEADDRESS]"))])
     add("relays", cmd_relays, "list the relays published by the landing site (--add connects to them all)", [
         (["--add"], dict(action="store_true", help="connect to every listed relay"))])
     add("world", cmd_world, "walk a first-person 3D view of the network: your sites are doors (truecolor terminal)", [])

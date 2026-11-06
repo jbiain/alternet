@@ -68,6 +68,9 @@ class Home:
 
     def key(self): return crypto.SigningKey.load_or_create(self.key_file)
     def store(self): return Store(os.path.join(self.path, "store"))
+    def feeds(self):
+        from .feed import Feeds
+        return Feeds(os.path.join(self.path, "feeds"))
 
     @property
     def names_file(self): return os.path.join(self.path, "names.json")

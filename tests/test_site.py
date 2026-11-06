@@ -253,6 +253,62 @@ class SharedDirectoryTests(unittest.TestCase):
             self.assertIn("Alice's board", out)
 
 
+
+class FeedTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        from alternet import crypto
+        from alternet.feed import Feeds
+        self.d = tempfile.mkdtemp()
+        self.key = crypto.SigningKey.load_or_create(os.path.join(self.d, "k"))
+        self.feeds = Feeds(os.path.join(self.d, "f"))
+
+    def test_post_verify_and_order(self):
+        from alternet import feed
+        a = feed.make_entry(self.key, "room", "one", t=100)
+        self.assertTrue(self.feeds.put(a))
+        self.assertFalse(self.feeds.put(a))                       # idempotent
+        b = feed.make_entry(self.key, "room", "two", self.feeds.heads("room"), t=101)
+        self.feeds.put(b)
+        self.assertEqual([e["body"]["text"] for _i, e in self.feeds.entries("room")], ["one", "two"])
+        self.assertEqual(len(self.feeds.heads("room")), 1)
+
+    def test_tamper_and_bad_input_rejected(self):
+        from alternet import feed
+        e = feed.make_entry(self.key, "room", "hello", t=100)
+        e["body"]["text"] = "forged"
+        with self.assertRaises(ValueError):
+            self.feeds.put(e)
+        for bad in ({}, {"body": 1, "sig": "00"}, {"body": e["body"], "sig": "zz"}):
+            with self.assertRaises(ValueError):
+                feed.verify_entry(bad)
+        with self.assertRaises(ValueError):
+            feed.make_entry(self.key, "../x", "hi")
+        with self.assertRaises(ValueError):
+            feed.make_entry(self.key, "room", "x" * 5000)
+        far = feed.make_entry(self.key, "room", "future", t=10 ** 12)
+        with self.assertRaises(ValueError):
+            feed.verify_entry(far)
+        other = feed.make_entry(self.key, "other", "x", t=1)
+        with self.assertRaises(ValueError):
+            feed.verify_entry(other, room="room")
+
+    def test_merge_is_union_and_same_order_everywhere(self):
+        import tempfile
+        from alternet import feed
+        from alternet.feed import Feeds
+        es = [feed.make_entry(self.key, "r", "m%d" % i, t=100 + (i % 2)) for i in range(4)]
+        f1, f2 = Feeds(os.path.join(self.d, "a")), Feeds(tempfile.mkdtemp())
+        for e in es[:3]:
+            f1.put(e)
+        for e in es[1:]:
+            f2.put(e)
+        for e in es:
+            f1.put(e); f2.put(e)
+        self.assertEqual([i for i, _ in f1.entries("r")], [i for i, _ in f2.entries("r")])
+        self.assertEqual(len(f1.ids("r")), 4)
+
+
 if __name__ == "__main__":
     unittest.main()
 
