@@ -1,6 +1,6 @@
 # 015: Shared live state (collaborative apps)
 
-Status: design, nothing built yet.
+Status: steps 1 and 2 built (shared directory in the host, demo room app). Steps 3 and 4 not built.
 
 ## Problem
 Each visitor to a hosted app gets an isolated sandbox. That is right for security, but it means apps cannot be
