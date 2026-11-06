@@ -490,8 +490,8 @@ def _write_all(buf, data, alive):
 
 class _Session:
     """One client: reads the header, picks and authorises the app, runs it in its own scratch dir."""
-    def __init__(self, host, link):
-        self.host, self.link = host, link
+    def __init__(self, host, link, only=None):
+        self.host, self.link, self.only = host, link, only      # only: this address serves just that app
         self.inq = queue.Queue()
         self.remote = None
         self.proc = self.master = self.scratch = self.proxy = None
@@ -562,6 +562,8 @@ class _Session:
             except (IndexError, ValueError):
                 rows, cols, term, want = 24, 80, "xterm-256color", ""
             apps = self.host.apps
+            if self.only:
+                want = self.only
             if not want and len(apps) == 1:
                 want = next(iter(apps))
             if not want:
@@ -801,13 +803,13 @@ def serve(home, apps, sandbox=True, max_sessions=4):
     dest = RNS.Destination(ident, RNS.Destination.IN, RNS.Destination.SINGLE, APP, ASPECT)
     host = Host(home, apps, sandbox, max_sessions)
 
-    def on_link(link):
+    def on_link(link, only=None):
         host.sessions[:] = [s for s in host.sessions if not s.closed.is_set()]
         if len(host.sessions) >= host.max:
             net.log("app host busy, refusing a connection")
             link.teardown()
             return
-        host.sessions.append(_Session(host, link))
+        host.sessions.append(_Session(host, link, only))
 
     dest.set_link_established_callback(on_link)
     from . import feed as feedlib
@@ -815,18 +817,30 @@ def serve(home, apps, sandbox=True, max_sessions=4):
     dest.register_request_handler("/feedids", lambda path, data, rid, lid, ri, t: h_ids(data), RNS.Destination.ALLOW_ALL)
     dest.register_request_handler("/feedget", lambda path, data, rid, lid, ri, t: h_get(data), RNS.Destination.ALLOW_ALL)
     bridges = [FeedBridge(home, a) for a in apps.values() if a.feed]
+    app_dests = {}                       # every app also gets its own address: open it and you are in that app
+    for name, a in apps.items():
+        f = os.path.join(home.path, "app-%s.identity" % "".join(c for c in name if c.isalnum() or c in "-_"))
+        i = RNS.Identity.from_file(f) if os.path.exists(f) else RNS.Identity()
+        i.to_file(f)
+        d = RNS.Destination(i, RNS.Destination.IN, RNS.Destination.SINGLE, APP, ASPECT)
+        d.set_link_established_callback(lambda link, n=name: on_link(link, n))
+        app_dests[name] = d
     print("Serving %d app(s)%s:" % (len(apps), "" if sandbox else "  ** WITHOUT SANDBOX **"), flush=True)
     for a in apps.values():
-        print("  %-14s %-8s %s" % (a.name, a.access, " ".join(a.cmd)), flush=True)
-    print("Address: %s" % dest.hash.hex(), flush=True)
-    print("Connect with: alternet open %s" % dest.hash.hex(), flush=True)
+        print("  %-14s %-8s %s  %s" % (a.name, a.access, app_dests[a.name].hash.hex(), " ".join(a.cmd)), flush=True)
+    print("Menu address: %s   (alternet open ADDRESS shows a menu; each app also has its own address above)" % dest.hash.hex(), flush=True)
+    def announce_all():
+        dest.announce(app_data=_announce_data(home, apps))
+        for n, d in app_dests.items():
+            d.announce(app_data=_announce_data(home, {n: apps[n]}))
+
     start, last, burst = time.time(), time.time(), list(net.ANNOUNCE_BURST)
     while True:
         now = time.time()
         if burst and now - start >= burst[0]:        # early, repeated announces: the first can precede the link-up
-            burst.pop(0); dest.announce(app_data=_announce_data(home, apps)); last = now
+            burst.pop(0); announce_all(); last = now
         elif not burst and now - last >= 120:
-            dest.announce(app_data=_announce_data(home, apps)); last = now
+            announce_all(); last = now
         for b in bridges:
             try:
                 b.step()
@@ -905,10 +919,18 @@ def connect(home, ref, timeout=30, retries=3):
               file=sys.stderr)
         end = time.time() + max(timeout, 130)
         # A bare 32-hex value may be a host address rather than a site id: after a short wait, try it as one.
-        early = time.time() + 12 if _hex32(ref) else None
+        early = time.time() + 15 if _hex32(ref) else None
+        asked = 0.0
         while want_site not in listener.hosts and time.time() < end:
-            if early and time.time() > early:
-                break
+            if early:
+                now = time.time()
+                if now > early:
+                    break
+                if now >= early - 12 and now - asked >= 3:           # a destination answers a path request; a site id never does
+                    asked = now
+                    RNS.Transport.request_path(bytes.fromhex(ref))
+                if now >= early - 12 and RNS.Identity.recall(bytes.fromhex(ref)) is not None and RNS.Transport.has_path(bytes.fromhex(ref)):
+                    break
             time.sleep(0.5)
         dh = listener.hosts.get(want_site)
         if dh is None and early:

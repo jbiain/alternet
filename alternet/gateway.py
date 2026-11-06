@@ -170,6 +170,7 @@ button{cursor:pointer}
 .menu-item .desc{color:#888;float:right}
 .menu-item:hover .desc{color:#333}
 .foot{margin-top:1.5em;padding-top:.75em;border-top:1px solid #555;font-size:.8em;color:#888}
+.apps{border:1px solid currentColor;padding:.4em 1em;margin:1em 0}.apps ul{margin:.3em 0}
 """
 
 
@@ -210,6 +211,10 @@ class Handler(BaseHTTPRequestHandler):
         return "%s://%s" % (proto, host)
 
     def _html(self, title, body_html, code=200, desc=None):
+        launcher = ""
+        if self.path.split("?")[0] in ("/", ""):
+            from . import webterm
+            launcher = webterm.launcher_html(self.server.home)
         desc = html.escape(desc or "A decentralised network of signed, content-addressed text sites. "
                            "No accounts, no company, no rented server.")
         jsonld = ('<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebSite",'
@@ -226,8 +231,8 @@ class Handler(BaseHTTPRequestHandler):
                     "<nav><a href='/'>main menu</a> &middot; <a href='/directory'>known sites</a> &middot; <a href='/terminal'>terminal</a> &middot; "
                     "<a href='/llms.txt'>for AI agents</a> &middot; "
                     "<a href='https://github.com/jbiain/alternet'>source</a></nav>"
-                    "%s</div></body></html>"
-                    % (desc, html.escape(title), desc, jsonld, html.escape(title), STYLE, body_html), code)
+                    "%s%s</div></body></html>"
+                    % (desc, html.escape(title), desc, jsonld, html.escape(title), STYLE, launcher, body_html), code)
 
     def do_GET(self):
         store, home = self.server.store, self.server.home

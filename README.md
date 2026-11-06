@@ -178,7 +178,8 @@ security model: `docs/013-security.md`.
 ```
 # host: one address that serves apps (each visitor gets their own sandboxed copy)
 alternet app-serve --name chat --access public python3 app4.py
-# visitor: open it from anywhere (Ctrl-] disconnects)
+# visitor: open it from anywhere (Ctrl-] disconnects). Each app has its own address (shown at start);
+# the host's menu address lists them all
 alternet open ADDRESS                 # or SITE@ADDRESS, or a bare SITE id
 # run an app site on your own machine, sandboxed
 alternet run SITE

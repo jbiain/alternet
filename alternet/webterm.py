@@ -15,9 +15,10 @@ PAGE = """<!doctype html><html><head><meta charset='utf-8'><meta name='viewport'
 <title>Alternet terminal</title><link rel='stylesheet' href='/terminal/xterm.css'>
 <style>body{margin:0;background:#111;color:#ddd;font:15px/1.4 Menlo,Consolas,monospace}
 #form{max-width:44em;margin:3em auto;padding:0 1em}input{width:100%;box-sizing:border-box;padding:.5em;background:#000;color:#ddd;border:1px solid #555;font:inherit}
-button{margin-top:.6em;padding:.4em 1em;font:inherit}#screen{display:none;padding:8px}a{color:#7cf}#bar{padding:4px 8px;color:#999}
+button{margin-top:.6em;padding:.4em 1em;font:inherit}#screen{display:none;padding:8px}a{color:#7cf}#bar{padding:4px 8px;color:#999}.apps{border:1px solid #555;padding:.4em 1em;margin:1em 0}
 </style></head><body>
 <div id='form'><h2>Alternet terminal</h2>
+<!--APPS-->
 <p>Open an Alternet app in this tab. Paste an address (for example <code>ADDRESS/room</code>), then Connect.</p>
 <input id='target' placeholder='ADDRESS, ADDRESS/APP or SITE@ADDRESS' autocomplete='off'><button id='go'>Connect</button>
 <p style='color:#999'>This page runs the client on the gateway, so the gateway operator can see what you type. For anything
@@ -29,10 +30,30 @@ CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline';
        "img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 
 
+def launcher_html(home):
+    """Buttons for the apps listed in <home>/webapps.json: [{"name": "room", "address": "32hex", "desc": "..."}]."""
+    import html as _h
+    try:
+        with open(os.path.join(home.path, "webapps.json")) as f:
+            items = json.load(f)
+    except (OSError, ValueError):
+        return ""
+    rows = []
+    for it in items if isinstance(items, list) else []:
+        try:
+            name, addr, desc = str(it["name"]), str(it["address"]), str(it.get("desc", ""))
+        except (KeyError, TypeError):
+            continue
+        if TARGET.match(addr):
+            rows.append("<li><a href='/terminal?open=%s'><b>%s</b></a> &ndash; %s</li>"
+                        % (addr, _h.escape(name), _h.escape(desc)))
+    return ("<div class='apps'><b>Open an app in your browser:</b><ul>%s</ul></div>" % "".join(rows)) if rows else ""
+
+
 def handle_get(h, path, query):
     """Serve /terminal pages and assets. Returns True if the request was handled."""
     if path == "/terminal":
-        data = PAGE.encode()
+        data = PAGE.replace("<!--APPS-->", launcher_html(h.server.home)).encode()
         h.send_response(200)
         h.send_header("Content-Type", "text/html; charset=utf-8")
         h.send_header("Content-Security-Policy", CSP)
