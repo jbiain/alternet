@@ -250,7 +250,7 @@ class Demux:
 class App:
     def __init__(self, name, cmd, cwd=None, access="public", net=False, ro=(), env=None, seconds=MAX_SESSION_SECONDS,
                  env_file=None, allow=(), site=None, runtimes=("python3",), grant_net=False,
-                 visitor_secrets=False, path=(), allow_storage=True):
+                 visitor_secrets=False, path=(), allow_storage=True, shared_mb=0):
         if access not in ("public", "trusted"):
             raise ValueError("app %r: access must be 'public' or 'trusted'" % name)
         if not cmd and not site:
@@ -259,6 +259,7 @@ class App:
         self.net, self.ro, self.env, self.seconds = bool(net), list(ro), dict(env or {}), int(seconds)
         self.visitor_secrets = bool(visitor_secrets)   # visitors supply the secrets the app declares (memory only)
         self.allow_storage, self.storage_mb = bool(allow_storage), 0   # storage_mb is set when a site app is resolved
+        self.shared_mb = max(0, int(shared_mb))        # >0: visitors of this app share /work/shared (host-side, quota in MB)
         self.path = list(path)                          # extra host directories on the app's PATH (put them in `ro` too)
         self.secrets = None                # for site apps: the only env_file names the app declared it needs
         self.site, self.runtimes, self.grant_net = site, tuple(runtimes), bool(grant_net)   # site: serve the app stored under this site id
@@ -277,7 +278,7 @@ def load_apps(home):
     return {n: App(n, d.get("cmd"), d.get("cwd"), d.get("access", "public"), d.get("net", False),
                    d.get("ro", ()), d.get("env"), d.get("seconds", MAX_SESSION_SECONDS), d.get("env_file"), d.get("allow", ()),
                    d.get("site"), d.get("runtimes", ("python3",)), d.get("grant_net", False),
-                   d.get("visitor_secrets", False), d.get("path", ()), d.get("storage", True)) for n, d in raw.items()}
+                   d.get("visitor_secrets", False), d.get("path", ()), d.get("storage", True), d.get("shared_mb", 0)) for n, d in raw.items()}
 
 
 def resolve_site_app(home, app):
@@ -324,7 +325,19 @@ def resolve_site_app(home, app):
     return out
 
 
-def bwrap_argv(app, scratch, env, data=None):
+def shared_usage(path):
+    """Bytes used under a shared directory (files only; symlinks are not followed)."""
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for f in files:
+            try:
+                total += os.lstat(os.path.join(root, f)).st_size
+            except OSError:
+                pass
+    return total
+
+
+def bwrap_argv(app, scratch, env, data=None, shared=None, shared_ro=False):
     """The bubblewrap command line that confines one session. Pure function: easy to test."""
     b = ["bwrap", "--die-with-parent", "--new-session", "--unshare-all", "--clearenv"]
     if app.net and not app.allow:
@@ -343,6 +356,8 @@ def bwrap_argv(app, scratch, env, data=None):
     b += ["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--bind", scratch, "/work"]
     if data:
         b += ["--bind", data, "/work/data"]
+    if shared:
+        b += ["--ro-bind" if shared_ro else "--bind", shared, "/work/shared"]
     chdir = "/work"
     if app.cwd:
         b += ["--ro-bind", os.path.abspath(app.cwd), "/app"]
@@ -603,8 +618,18 @@ class _Session:
                     net.log("ignoring bad saved data: %s" % e)
             self.data_in = None
             env["ALTERNET_DATA"] = "/work/data" if self.host.sandbox else self.data_dir
+        shared, shared_ro = None, False
+        if app.shared_mb:
+            shared = os.path.join(self.host.home.path, "shared", "".join(c for c in app.name if c.isalnum() or c in "-_"))
+            os.makedirs(shared, mode=0o700, exist_ok=True)
+            shared_ro = shared_usage(shared) >= app.shared_mb << 20          # over quota: visitors may read, not write
+            end0 = time.time() + 2
+            while self.remote is None and time.time() < end0 and self.alive():
+                time.sleep(0.1)
+            env["ALTERNET_PEER"] = self.remote.hash.hex() if self.remote is not None else ""
+            env["ALTERNET_SHARED"] = "/work/shared" if self.host.sandbox else shared
         if self.host.sandbox:
-            argv, run_env, cwd = bwrap_argv(app, self.scratch, env), None, None
+            argv, run_env, cwd = bwrap_argv(app, self.scratch, env, shared=shared, shared_ro=shared_ro), None, None
         else:
             argv, run_env, cwd = app.cmd, dict(os.environ, HOME=self.scratch, **env), app.cwd or self.scratch
         if app.allow and self.host.sandbox:

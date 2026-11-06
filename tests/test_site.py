@@ -462,6 +462,21 @@ class AppHostTests(unittest.TestCase):
         out = f.feed(b"x\x1b]52;c;aGV") + f.feed(b"sbG8=\x07y\x1b[3") + f.feed(b"1mz\x1b[6") + f.feed(b"nq")
         self.assertEqual(out, b"xy\x1b[31mzq")
 
+    def test_shared_dir_binding_and_quota(self):
+        from alternet.apphost import App, bwrap_argv, shared_usage
+        a = App("room", ["x"], shared_mb=2)
+        argv = bwrap_argv(a, "/s", {}, shared="/h/shared/room")
+        i = argv.index("/work/shared")
+        self.assertEqual(argv[i - 2:i + 1], ["--bind", "/h/shared/room", "/work/shared"])
+        self.assertEqual(bwrap_argv(a, "/s", {}, shared="/h/shared/room", shared_ro=True)[i - 2], "--ro-bind")
+        self.assertNotIn("/work/shared", bwrap_argv(App("x", ["x"]), "/s", {}))
+        self.assertEqual(App("x", ["x"]).shared_mb, 0)
+        import tempfile
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, "f"), "wb") as f:
+            f.write(b"x" * 1000)
+        self.assertEqual(shared_usage(d), 1000)
+
     def test_bwrap_argv_confines_and_defaults_offline(self):
         from alternet.apphost import App, bwrap_argv
         a = App("chat", ["python3", "app.py"], cwd="/opt/apps/chat")
