@@ -188,6 +188,9 @@ as an API key are typed by the visitor, held in memory only and never stored by 
 kept on the visitor's side (up to 8 MB). Terminal output is filtered so an app cannot use escape sequences to
 read your clipboard or query your terminal.
 
+A browser works too: open `/terminal` on a gateway (for example https://y-0-x.com/terminal), paste an app address, and the
+terminal runs in the page. On a public gateway the operator can see your session; run `alternet gateway` locally for private use.
+
 ## Demo 8: sharing connectivity and keeping storage in check
 
 ```

@@ -921,12 +921,18 @@ def connect(home, ref, timeout=30, retries=3):
     else:
         print("Looking for the app ...", file=sys.stderr)
     link = None
+    t_up = time.time()                                   # interfaces come up in the background: a request sent before
+    while time.time() - t_up < 8 and not any(getattr(i, "online", False) for i in RNS.Transport.interfaces):
+        time.sleep(0.2)                                  # the relay link exists goes nowhere
     for attempt in range(retries):
         t = time.time()
         ident = RNS.Identity.recall(dh)
+        last_req = 0.0
         while (ident is None or not RNS.Transport.has_path(dh)) and time.time() - t < timeout / 2:
-            RNS.Transport.request_path(dh)
-            time.sleep(1)
+            if time.time() - last_req >= 5:              # repeated requests inside a few seconds are discarded
+                RNS.Transport.request_path(dh)
+                last_req = time.time()
+            time.sleep(0.5)
             ident = RNS.Identity.recall(dh)
         if ident is None:
             continue

@@ -1,6 +1,6 @@
 # 016: Assessment of the "native graphical environment" proposal (v2)
 
-Status: assessment only. Nothing in the repository was changed for it. Facts marked (verify) were not checked.
+Status: assessment, plus the web terminal from the recommendation, now built (see the last section). Facts marked (verify) were not checked.
 
 ## What the proposal asks for
 A Rust + Slint pixel environment that runs without a desktop (Linux DRM/KMS), also on macOS, QEMU and headless
@@ -53,3 +53,14 @@ Trust model, which must be stated plainly to users:
 ## What a native spike would measure (if gate A passes)
 Cold start, idle CPU, memory, bytes sent for a static page, a scroll and an animation, reconnect time, and comparison
 against the browser approach and against VNC.
+
+## As built: the web terminal
+`/terminal` on the gateway (`alternet/webterm.py`, assets in `alternet/web/`). The page is xterm.js 5.5.0 (MIT, vendored;
+licence in `web/LICENSE-xterm.txt`) and connects over a same-origin WebSocket. For each tab the gateway starts the ordinary
+`alternet open ADDRESS[/APP]` in a pty with a throwaway home (a new identity every time, deleted afterwards) and relays bytes.
+- Safety: only 32-hex addresses (optionally `@host`, `/app`) are accepted, passed as fixed arguments, never through a shell;
+  Origin must match Host (no cross-site use); at most 4 sessions, 1 hour maximum, 15 minutes idle; frames over 64 KB are refused.
+- Trust: the gateway operator can see the session. Run `alternet gateway` on your own machine for private use.
+- Not done: live window resizing (size is fixed when the tab connects), uploads, a list of known apps on the landing page.
+- Also fixed on the way: fresh identities sometimes failed to reach a host because path requests were sent before the relay
+  link was up and then repeated too fast.

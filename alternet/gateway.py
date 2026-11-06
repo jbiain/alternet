@@ -223,7 +223,7 @@ class Handler(BaseHTTPRequestHandler):
                     "<link rel='sitemap' type='application/xml' href='/sitemap.xml'>%s"
                     "<title>%s</title><style>%s</style></head><body><div class='box'>"
                     "<h1>Alternet BBS</h1>"
-                    "<nav><a href='/'>main menu</a> &middot; <a href='/directory'>known sites</a> &middot; "
+                    "<nav><a href='/'>main menu</a> &middot; <a href='/directory'>known sites</a> &middot; <a href='/terminal'>terminal</a> &middot; "
                     "<a href='/llms.txt'>for AI agents</a> &middot; "
                     "<a href='https://github.com/jbiain/alternet'>source</a></nav>"
                     "%s</div></body></html>"
