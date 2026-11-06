@@ -1,11 +1,11 @@
 {
  "app": 1,
- "title": "Codex (sign in with your own account)",
+ "title": "Codex",
  "runtime": "native",
  "run": [
   "sh",
   "-c",
-  "export CODEX_HOME=/work/data/codex; mkdir -p \"$CODEX_HOME\"; codex login status >/dev/null 2>&1 || codex login --device-auth; exec codex --no-daemon --dangerously-bypass-approvals-and-sandbox"
+  "export CODEX_HOME=/work/data/codex; mkdir -p \"$CODEX_HOME\"; exec codex --no-daemon --dangerously-bypass-approvals-and-sandbox"
  ],
  "needs": {
   "secrets": [],
