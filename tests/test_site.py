@@ -344,6 +344,37 @@ class FeedBridgeTests(unittest.TestCase):
         self.assertEqual(len([x for x in open(log).read().splitlines()]), 4)
 
 
+
+class WebTermTests(unittest.TestCase):
+    def test_target_validation(self):
+        from alternet.webterm import TARGET
+        a = "a" * 32
+        for ok in (a, a + "/room", a + "@" + "b" * 32, a + "@" + "b" * 32 + "/x.y-z_1"):
+            self.assertTrue(TARGET.match(ok), ok)
+        for bad in ("", "abc", a + "/", a + "/../x", a + ";ls", a + "/a b", "A" * 32, a + "\n", "-h", a + "/" + "x" * 49):
+            self.assertFalse(TARGET.match(bad), repr(bad))
+
+    def test_frames(self):
+        import os as _os
+        from alternet.webterm import _frame, _parse, MAX_FRAME
+        def masked(op, data):
+            m = _os.urandom(4)
+            n = len(data)
+            head = bytes([0x80 | op]) + (bytes([0x80 | n]) if n < 126 else b"\xfe" + n.to_bytes(2, "big"))
+            return head + m + bytes(b ^ m[k % 4] for k, b in enumerate(data))
+        for payload in (b"x", b"hello", b"y" * 300):
+            op, data, rest = _parse(masked(2, payload) + b"tail")
+            self.assertEqual((op, data, rest), (2, payload, b"tail"))
+        self.assertIsNone(_parse(masked(2, b"hello")[:4]))                 # incomplete
+        with self.assertRaises(ValueError):
+            _parse(b"\x82\x05hello")                                     # unmasked client frame
+        big = b"\x82\xff" + (MAX_FRAME + 1).to_bytes(8, "big") + b"\0" * 4
+        with self.assertRaises(ValueError):
+            _parse(big)
+        f = _frame(b"z" * 200)
+        self.assertEqual(f[:4], b"\x82\x7e\x00\xc8")
+
+
 if __name__ == "__main__":
     unittest.main()
 

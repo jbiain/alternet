@@ -18,3 +18,6 @@ alternet = "alternet.cli:main"
 
 [tool.setuptools]
 packages = ["alternet"]
+
+[tool.setuptools.package-data]
+alternet = ["web/*"]

@@ -232,6 +232,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         store, home = self.server.store, self.server.home
         path, _, query = self.path.partition("?")
+        if path == "/terminal" or path.startswith("/terminal/"):
+            from . import webterm
+            if webterm.handle_get(self, path, query):
+                return
         if path == "/robots.txt":
             # Explicit welcome, not just an absence of Disallow - including the common AI-crawler agents by
             # name, since this content is meant to be read by them, not merely tolerated.
