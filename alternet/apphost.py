@@ -118,6 +118,7 @@ class OutputFilter:
 
 # ---------------------------------------------------------------- spec handshake (docs/014)
 SPEC = b"ALTSPEC "           # host -> client, one line, before a site app starts: signed manifest + app.json blocks
+LIST = b"ALTLIST "           # host -> client when no app was named and several exist: [[name, access], ...]
 SEC = b"ALTSEC "             # client -> host after GO: {"NAME": "value"} for the secrets the app declared
 GO, NO = b"ALTGO", b"ALTNO"   # client -> host: the visitor accepted / declined the permissions
 
@@ -422,10 +423,13 @@ class _Session:
     def read_line(self, echo=False, timeout=60):
         line, end = b"", time.time() + timeout
         while self.alive() and time.time() < end:
-            try:
-                data = self.inq.get(timeout=0.5)
-            except queue.Empty:
-                continue
+            if self.leftover:                            # bytes that followed the previous newline
+                data, self.leftover = self.leftover, b""
+            else:
+                try:
+                    data = self.inq.get(timeout=0.5)
+                except queue.Empty:
+                    continue
             for k, c in enumerate(data):
                 if c in (10, 13):
                     self.leftover = data[k + 1:]
@@ -465,17 +469,10 @@ class _Session:
             if not want and len(apps) == 1:
                 want = next(iter(apps))
             if not want:
-                self.say("Apps on this address:\n")
                 names = sorted(apps)
-                for i, n in enumerate(names, 1):
-                    self.say("  %d) %-14s%s\n" % (i, n, "  (trusted peers only)" if apps[n].access == "trusted" else ""))
-                self.say("Choose a number: ")
-                pick = self.read_line(echo=True)
-                self.say("\n")
-                try:
-                    want = names[int(pick) - 1]
-                except (TypeError, ValueError, IndexError):
-                    return self.finish("no such app")
+                self.say(LIST.decode() + json.dumps([[n, apps[n].access] for n in names]) + "\n")
+                time.sleep(0.5)
+                return self.finish("")
             app = apps.get(want)
             if app is None and len(want) >= 8 and all(c in "0123456789abcdef" for c in want.lower()):
                 store = self.host.home.store()
@@ -779,7 +776,8 @@ def connect(home, ref, timeout=30, retries=3):
                 if not _hex32(addr_hex):
                     raise SystemExit("alternet: bad host address %r" % addr_hex)
                 dh = bytes.fromhex(addr_hex)
-    RNS.Reticulum(home.rns_dir, loglevel=int(os.environ.get("ALTERNET_LOGLEVEL", RNS.LOG_ERROR)))
+    if RNS.Reticulum.get_instance() is None:
+        RNS.Reticulum(home.rns_dir, loglevel=int(os.environ.get("ALTERNET_LOGLEVEL", RNS.LOG_ERROR)))
     RNS.Transport.register_announce_handler(listener)
     my_id = RNS.Identity.from_file(os.path.join(home.path, "node.identity")) if os.path.exists(
         os.path.join(home.path, "node.identity")) else None
@@ -865,9 +863,14 @@ def connect(home, ref, timeout=30, retries=3):
             return
         state["pre"] += data
         pre = state["pre"]
-        if SPEC.startswith(pre[:len(SPEC)]) and len(pre) < len(SPEC):
-            return                                         # could still become a spec line
-        if pre.startswith(SPEC):
+        if len(pre) < len(SPEC) and (SPEC.startswith(pre) or LIST.startswith(pre)):
+            return                                         # could still become a spec or list line
+        if pre.startswith(LIST):
+            if b"\n" not in pre:
+                return
+            state["list"], state["mode"] = pre.partition(b"\n")[0][len(LIST):], "wait"
+            got.set()
+        elif pre.startswith(SPEC):
             if b"\n" not in pre:
                 return
             line, _, rest = pre.partition(b"\n")
@@ -885,6 +888,24 @@ def connect(home, ref, timeout=30, retries=3):
                                   os.environ.get("TERM", "xterm-256color").encode(), appname.encode())
     _write_all(buf, head, lambda: True)
     got.wait(6)                                            # a site app sends its spec first; others just start
+    if state.get("list") is not None:
+        link.teardown()
+        try:
+            items = json.loads(state["list"])
+        except ValueError:
+            raise SystemExit("alternet: the host sent a bad app list")
+        print("Apps on this address:")
+        for i, (n, acc) in enumerate(items, 1):
+            print("  %d) %-14s%s" % (i, n, "  (trusted peers only)" if acc == "trusted" else ""))
+        try:
+            pick = input("Choose a number: ").strip()
+        except EOFError:
+            raise SystemExit(1)
+        names = [n for n, _ in items]
+        name = pick if pick in names else (names[int(pick) - 1] if pick.isdigit() and 0 < int(pick) <= len(names) else None)
+        if name is None:
+            raise SystemExit("alternet: no such app")
+        return connect(home, "%s/%s" % (dh.hex(), name), timeout, retries)
     if state["spec_line"] is not None:
         from . import appspec
         try:
