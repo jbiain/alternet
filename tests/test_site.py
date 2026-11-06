@@ -309,6 +309,41 @@ class FeedTests(unittest.TestCase):
         self.assertEqual(len(f1.ids("r")), 4)
 
 
+
+class FeedBridgeTests(unittest.TestCase):
+    def test_export_import_and_no_loops(self):
+        import tempfile
+        from alternet import feed
+        from alternet.apphost import App, FeedBridge, shared_dir
+        from alternet.home import Home
+        h = Home(tempfile.mkdtemp()); h.init(standalone=True)
+        app = App("room", ["x"], shared_mb=1, feed="lobby")
+        d = shared_dir(h, app); os.makedirs(d)
+        log = os.path.join(d, "room.log")
+        with open(log, "w") as f:
+            f.write(json.dumps({"t": 1, "n": "old", "m": "before start"}) + "\n")
+        b = FeedBridge(h, app)
+        b.step()
+        self.assertEqual(h.feeds().ids("lobby"), [])                     # old lines are not exported
+        with open(log, "a") as f:
+            f.write(json.dumps({"t": 100, "n": "aa11bb", "m": "hello"}) + "\n")
+            f.write(json.dumps({"t": 101, "n": "*", "m": "aa11bb joined"}) + "\n")
+        b.step()
+        es = h.feeds().entries("lobby")
+        self.assertEqual([e["body"]["text"] for _i, e in es], ["<aa11bb> hello"])   # system lines stay local
+        b.step(); b.step()
+        self.assertEqual(len(h.feeds().ids("lobby")), 1)                  # no loop: imports are not re-exported
+        from alternet import crypto
+        other = crypto.SigningKey.load_or_create(os.path.join(tempfile.mkdtemp(), "k"))
+        h.feeds().put(feed.make_entry(other, "lobby", "<zz> from afar", t=200))
+        b.step(); b.step()
+        lines = [json.loads(x) for x in open(log).read().splitlines()]
+        self.assertEqual([x["m"] for x in lines if x.get("src")], ["<zz> from afar"])
+        self.assertEqual(len(h.feeds().ids("lobby")), 2)                  # still no echo
+        b2 = FeedBridge(h, app); b2.step()                                # restart: nothing is duplicated
+        self.assertEqual(len([x for x in open(log).read().splitlines()]), 4)
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -250,7 +250,7 @@ class Demux:
 class App:
     def __init__(self, name, cmd, cwd=None, access="public", net=False, ro=(), env=None, seconds=MAX_SESSION_SECONDS,
                  env_file=None, allow=(), site=None, runtimes=("python3",), grant_net=False,
-                 visitor_secrets=False, path=(), allow_storage=True, shared_mb=0):
+                 visitor_secrets=False, path=(), allow_storage=True, shared_mb=0, feed=None):
         if access not in ("public", "trusted"):
             raise ValueError("app %r: access must be 'public' or 'trusted'" % name)
         if not cmd and not site:
@@ -259,6 +259,11 @@ class App:
         self.net, self.ro, self.env, self.seconds = bool(net), list(ro), dict(env or {}), int(seconds)
         self.visitor_secrets = bool(visitor_secrets)   # visitors supply the secrets the app declares (memory only)
         self.allow_storage, self.storage_mb = bool(allow_storage), 0   # storage_mb is set when a site app is resolved
+        self.feed = feed                                # room name: mirror this app's shared room.log into a signed feed
+        if feed:
+            from .feed import ROOM_RE
+            if not ROOM_RE.match(feed) or not shared_mb:
+                raise ValueError("app %r: feed needs a valid room name and shared_mb" % name)
         self.shared_mb = max(0, int(shared_mb))        # >0: visitors of this app share /work/shared (host-side, quota in MB)
         self.path = list(path)                          # extra host directories on the app's PATH (put them in `ro` too)
         self.secrets = None                # for site apps: the only env_file names the app declared it needs
@@ -278,7 +283,7 @@ def load_apps(home):
     return {n: App(n, d.get("cmd"), d.get("cwd"), d.get("access", "public"), d.get("net", False),
                    d.get("ro", ()), d.get("env"), d.get("seconds", MAX_SESSION_SECONDS), d.get("env_file"), d.get("allow", ()),
                    d.get("site"), d.get("runtimes", ("python3",)), d.get("grant_net", False),
-                   d.get("visitor_secrets", False), d.get("path", ()), d.get("storage", True), d.get("shared_mb", 0)) for n, d in raw.items()}
+                   d.get("visitor_secrets", False), d.get("path", ()), d.get("storage", True), d.get("shared_mb", 0), d.get("feed")) for n, d in raw.items()}
 
 
 def resolve_site_app(home, app):
@@ -323,6 +328,76 @@ def resolve_site_app(home, app):
     out.secrets = needs["secrets"]
     out.storage_mb = needs["storage_mb"] if app.allow_storage else 0
     return out
+
+
+def shared_dir(home, app):
+    return os.path.join(home.path, "shared", "".join(c for c in app.name if c.isalnum() or c in "-_"))
+
+
+class FeedBridge:
+    """Mirrors an app's shared `room.log` (one JSON line {t, n, m} per message) into a signed feed and back.
+    The host signs on the visitors' behalf (it knows their verified peer id, not a signing key), so entries read
+    `<nick> text` and are authenticated as coming from this host. Lines imported from other hosts carry `src`."""
+    def __init__(self, home, app):
+        from . import feed
+        self.feed, self.room, self.me = feed, app.feed, home.key().public_bytes().hex()
+        self.feeds, self.key = home.feeds(), home.key()
+        self.dir = shared_dir(home, app)
+        os.makedirs(self.dir, mode=0o700, exist_ok=True)
+        self.log = os.path.join(self.dir, "room.log")
+        self.pos, self.done, first = 0, set(), 0
+        for rec in self._lines(0)[1]:
+            if rec.get("src"):
+                self.done.add(rec["src"])
+            if isinstance(rec.get("t"), int) and (not first or rec["t"] < first):
+                first = rec["t"]
+        self.pos = os.path.getsize(self.log) if os.path.exists(self.log) else 0     # old lines are not re-exported
+        for eid, e in self.feeds.entries(self.room):
+            if e["body"]["author"] == self.me or e["body"]["t"] < first:
+                self.done.add(eid)
+
+    def _lines(self, pos):
+        if not os.path.exists(self.log):
+            return pos, []
+        with open(self.log, "rb") as f:
+            f.seek(pos)
+            data = f.read()
+        out = []
+        for ln in data.splitlines():
+            try:
+                rec = json.loads(ln)
+                if isinstance(rec, dict):
+                    out.append(rec)
+            except ValueError:
+                pass
+        return pos + len(data), out
+
+    def step(self):
+        size = os.path.getsize(self.log) if os.path.exists(self.log) else 0
+        if size < self.pos:                       # the app trimmed its log: do not re-export what it kept
+            self.pos = size
+        self.pos, recs = self._lines(self.pos)
+        for rec in recs:                          # export: new local messages -> feed
+            if rec.get("src") or rec.get("n") == "*" or not isinstance(rec.get("m"), str):
+                continue
+            try:
+                e = self.feed.make_entry(self.key, self.room, "<%s> %s" % (str(rec.get("n", "?"))[:16], rec["m"]),
+                                         self.feeds.heads(self.room), t=rec["t"] if isinstance(rec.get("t"), int) else None)
+                self.feeds.put(e, self.room)
+                self.done.add(self.feed.verify_entry(e)[0])
+            except ValueError:
+                pass
+        for eid, e in self.feeds.entries(self.room):          # import: entries from other hosts -> room.log
+            if eid in self.done:
+                continue
+            self.done.add(eid)
+            b = e["body"]
+            line = json.dumps({"t": b["t"], "n": b["author"][:6] + "@feed", "m": b["text"], "src": eid}) + "\n"
+            fd = os.open(self.log, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+            try:
+                os.write(fd, line.encode())
+            finally:
+                os.close(fd)
 
 
 def shared_usage(path):
@@ -620,7 +695,7 @@ class _Session:
             env["ALTERNET_DATA"] = "/work/data" if self.host.sandbox else self.data_dir
         shared, shared_ro = None, False
         if app.shared_mb:
-            shared = os.path.join(self.host.home.path, "shared", "".join(c for c in app.name if c.isalnum() or c in "-_"))
+            shared = shared_dir(self.host.home, app)
             os.makedirs(shared, mode=0o700, exist_ok=True)
             shared_ro = shared_usage(shared) >= app.shared_mb << 20          # over quota: visitors may read, not write
             end0 = time.time() + 2
@@ -729,6 +804,11 @@ def serve(home, apps, sandbox=True, max_sessions=4):
         host.sessions.append(_Session(host, link))
 
     dest.set_link_established_callback(on_link)
+    from . import feed as feedlib
+    h_ids, h_get = feedlib.handlers(home)
+    dest.register_request_handler("/feedids", lambda path, data, rid, lid, ri, t: h_ids(data), RNS.Destination.ALLOW_ALL)
+    dest.register_request_handler("/feedget", lambda path, data, rid, lid, ri, t: h_get(data), RNS.Destination.ALLOW_ALL)
+    bridges = [FeedBridge(home, a) for a in apps.values() if a.feed]
     print("Serving %d app(s)%s:" % (len(apps), "" if sandbox else "  ** WITHOUT SANDBOX **"), flush=True)
     for a in apps.values():
         print("  %-14s %-8s %s" % (a.name, a.access, " ".join(a.cmd)), flush=True)
@@ -741,6 +821,11 @@ def serve(home, apps, sandbox=True, max_sessions=4):
             burst.pop(0); dest.announce(app_data=_announce_data(home, apps)); last = now
         elif not burst and now - last >= 120:
             dest.announce(app_data=_announce_data(home, apps)); last = now
+        for b in bridges:
+            try:
+                b.step()
+            except Exception as e:
+                net.log("feed bridge error: %s" % e)
         time.sleep(1)
 
 

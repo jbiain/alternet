@@ -121,3 +121,23 @@ class Feeds:
         es = self.entries(room)
         seen = {p for _i, e in es for p in e["body"]["prev"]}
         return [i for i, _e in es if i not in seen]
+
+
+def handlers(home):
+    """(ids, get) request handlers shared by every kind of node: ids(room) -> JSON list, get("room\\nid") -> entry."""
+    import json as _j
+
+    def ids(data):
+        try:
+            return _j.dumps(home.feeds().ids(data.decode())).encode()
+        except Exception:
+            return None
+
+    def get(data):
+        try:
+            room, _, eid = data.decode().partition("\n")
+            e = home.feeds().get(room, eid)
+            return _j.dumps(e).encode() if e else None
+        except Exception:
+            return None
+    return ids, get

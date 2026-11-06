@@ -38,6 +38,11 @@ turn order do not, and stay on a single host.
 - `alternet node` serves feeds it holds (`/feedids`, `/feedget`). `sync` pulls what you lack, verifying every entry.
   Rooms are found by node address (like `SITE@NODEADDRESS`), not announced.
 - Order: after everything named in `prev`, then timestamp, then id, so every replica shows the same order.
+- Room app bridge (`"feed": "lobby"` in apps.json, needs `shared_mb`): the host mirrors the app's `room.log` into the feed and
+  back. The host signs on visitors' behalf (it knows their verified peer id, not a signing key), so entries read
+  `<nick> text` and are authenticated as coming from that host. Imported lines carry `src`, so nothing loops. The app host
+  also serves `/feedids` and `/feedget`, so `alternet feed sync lobby APPHOSTADDRESS` works. Another host's operator pulls
+  with `feed sync` (for example from cron); the host does not pull from others by itself yet.
 - Not done: spam control (anyone can post to a room; moderation lists), encryption, announcing rooms, connecting the
   `room` app to feeds so its host mirrors messages, pruning old entries.
 

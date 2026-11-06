@@ -111,13 +111,14 @@ class Session:
         dh, ident = self._recall(addr_hex, timeout)
         if ident is None:
             raise ValueError("could not find %s on the network" % addr_hex)
-        raw = self._request(ident, dh, "/feedids", room.encode())
+        aspect = "app" if self.RNS.Destination.hash(ident, APP, "app") == dh else ASPECT   # a site node or an app host
+        raw = self._request(ident, dh, "/feedids", room.encode(), aspect=aspect)
         if raw is None:
             raise ValueError("that node did not answer")
         feeds, new, bad = self.home.feeds(), 0, 0
         have = set(feeds.ids(room))
         for eid in [i for i in json.loads(raw) if i not in have][:feed.MAX_ENTRIES]:
-            blob = self._request(ident, dh, "/feedget", ("%s\n%s" % (room, eid)).encode())
+            blob = self._request(ident, dh, "/feedget", ("%s\n%s" % (room, eid)).encode(), aspect=aspect)
             try:
                 e = json.loads(blob)
                 if feed.verify_entry(e, room)[0] != eid:
@@ -141,14 +142,14 @@ class Session:
         self.dest.announce(app_data=json.dumps(self.catalog()).encode())
 
     # --- fetching ---
-    def _request(self, ident, dest_hash, path, data, timeout=20):
+    def _request(self, ident, dest_hash, path, data, timeout=20, aspect=ASPECT):
         RNS = self.RNS
         if not RNS.Transport.has_path(dest_hash):
             RNS.Transport.request_path(dest_hash)
             t = time.time()
             while not RNS.Transport.has_path(dest_hash) and time.time() - t < 8:
                 time.sleep(0.2)
-        d = RNS.Destination(ident, RNS.Destination.OUT, RNS.Destination.SINGLE, APP, ASPECT)
+        d = RNS.Destination(ident, RNS.Destination.OUT, RNS.Destination.SINGLE, APP, aspect)
         link = RNS.Link(d)
         t = time.time()
         while link.status != RNS.Link.ACTIVE and time.time() - t < timeout:
