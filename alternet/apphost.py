@@ -330,6 +330,12 @@ def resolve_site_app(home, app):
     return out
 
 
+# Undo whatever modes a remote app switched on, so it cannot leave your terminal in a broken state:
+# attributes, cursor, mouse reporting (all variants), bracketed paste, focus events, application keys, alternate screen.
+TERM_RESET = ("\033[0m\033[?25h\033[?1000l\033[?1002l\033[?1003l\033[?1005l\033[?1006l\033[?1015l"
+              "\033[?2004l\033[?1004l\033[?1l\033>\033[?1049l\033[<u")
+
+
 def shared_dir(home, app):
     return os.path.join(home.path, "shared", "".join(c for c in app.name if c.isalnum() or c in "-_"))
 
@@ -1087,4 +1093,4 @@ def connect(home, ref, timeout=30, retries=3):
             link.teardown()
         except Exception:
             pass
-        sys.stdout.write("\033[0m\033[?25h\r\n[disconnected]\r\n")
+        sys.stdout.write(TERM_RESET + "\r\n[disconnected]\r\n")
