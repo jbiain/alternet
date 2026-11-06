@@ -790,9 +790,17 @@ def connect(home, ref, timeout=30, retries=3):
         print("Looking for a host serving this app (hosts announce every 2 minutes, this can take a while) ...",
               file=sys.stderr)
         end = time.time() + max(timeout, 130)
+        # A bare 32-hex value may be a host address rather than a site id: after a short wait, try it as one.
+        early = time.time() + 12 if _hex32(ref) else None
         while want_site not in listener.hosts and time.time() < end:
+            if early and time.time() > early:
+                break
             time.sleep(0.5)
         dh = listener.hosts.get(want_site)
+        if dh is None and early:
+            dh = bytes.fromhex(ref)
+            appname = ""
+            print("No site announce seen; trying %s as a host address ..." % ref, file=sys.stderr)
         if dh is None:
             raise SystemExit("alternet: no host announced this app yet (hosts announce every 2 minutes). "
                              "Try again, or use SITE@HOSTADDRESS.")
