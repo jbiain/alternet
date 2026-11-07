@@ -12,19 +12,14 @@ ASSETS = {"/terminal/xterm.js": ("xterm.js", "application/javascript"), "/termin
           "/terminal/term.js": ("term.js", "application/javascript"), "/terminal/LICENSE-xterm.txt": ("LICENSE-xterm.txt", "text/plain")}
 
 PAGE = """<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
-<title>Alternet terminal</title><link rel='stylesheet' href='/terminal/xterm.css'>
-<style>body{margin:0;background:#111;color:#ddd;font:15px/1.4 Menlo,Consolas,monospace}
-#form{max-width:44em;margin:3em auto;padding:0 1em}input{width:100%;box-sizing:border-box;padding:.5em;background:#000;color:#ddd;border:1px solid #555;font:inherit}
-button{margin-top:.6em;padding:.4em 1em;font:inherit}#screen{display:none;padding:8px}a{color:#7cf}#bar{padding:4px 8px;color:#999}.apps{border:1px solid #555;padding:.4em 1em;margin:1em 0}
-</style></head><body>
-<div id='form'><h2>Alternet terminal</h2><p id='note' style='color:#fc6'></p>
-<!--APPS-->
-<p>Open an Alternet app in this tab. Paste an address (for example <code>ADDRESS/room</code>), then Connect.</p>
-<input id='target' placeholder='ADDRESS, ADDRESS/APP or SITE@ADDRESS' autocomplete='off'><button id='go'>Connect</button>
-<p style='color:#999'>This page runs the client on the gateway, so the gateway operator can see what you type. For anything
-private, run <code>alternet gateway</code> on your own computer and open this page there. <a href='/bbs'>The BBS and site directory</a></p></div>
+<title>Alternet</title><link rel='stylesheet' href='/terminal/xterm.css'>
+<style>body{margin:0;background:#000;color:#ddd;font:15px/1.4 Menlo,Consolas,monospace}#screen{padding:8px}a{color:#7cf}#bar{padding:4px 8px;color:#999}</style></head><body>
 <div id='bar'><span id='status'></span></div>
 <div id='screen'><div id='term'></div></div>
+<noscript><p style='padding:1em'>Alternet is a terminal-first network. This page needs JavaScript to run the in-browser terminal.
+Without it: <a href='/bbs'>read the sites</a>, <a href='/llms.txt'>plain-text overview</a>, or install the client:
+<code>curl -fsSL /install.sh | sh</code>.</p></noscript>
+<script id='apps' type='application/json'><!--APPS--></script>
 <script src='/terminal/xterm.js'></script><script src='/terminal/term.js'></script></body></html>"""
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; "
        "img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
@@ -50,10 +45,28 @@ def launcher_html(home):
     return ("<div class='apps'><b>Open an app in your browser:</b><ul>%s</ul></div>" % "".join(rows)) if rows else ""
 
 
+def apps_json(home):
+    """The launcher entries as JSON for the in-page menu (only well-formed addresses)."""
+    try:
+        with open(os.path.join(home.path, "webapps.json")) as f:
+            items = json.load(f)
+    except (OSError, ValueError):
+        items = []
+    out = []
+    for it in items if isinstance(items, list) else []:
+        try:
+            a = {"name": str(it["name"]), "address": str(it["address"]), "desc": str(it.get("desc", ""))}
+        except (KeyError, TypeError):
+            continue
+        if TARGET.match(a["address"]):
+            out.append(a)
+    return json.dumps(out).replace("<", "\\u003c")
+
+
 def handle_get(h, path, query):
     """Serve /terminal pages and assets. Returns True if the request was handled."""
     if path == "/terminal":
-        data = PAGE.replace("<!--APPS-->", launcher_html(h.server.home)).encode()
+        data = PAGE.replace("<!--APPS-->", apps_json(h.server.home)).encode()
         h.send_response(200)
         h.send_header("Content-Type", "text/html; charset=utf-8")
         h.send_header("Content-Security-Policy", CSP)
