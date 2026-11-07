@@ -22,7 +22,7 @@ button{margin-top:.6em;padding:.4em 1em;font:inherit}#screen{display:none;paddin
 <p>Open an Alternet app in this tab. Paste an address (for example <code>ADDRESS/room</code>), then Connect.</p>
 <input id='target' placeholder='ADDRESS, ADDRESS/APP or SITE@ADDRESS' autocomplete='off'><button id='go'>Connect</button>
 <p style='color:#999'>This page runs the client on the gateway, so the gateway operator can see what you type. For anything
-private, run <code>alternet gateway</code> on your own computer and open this page there. <a href='/'>Back to the BBS</a></p></div>
+private, run <code>alternet gateway</code> on your own computer and open this page there. <a href='/bbs'>The BBS and site directory</a></p></div>
 <div id='bar'><span id='status'></span> <button id='quit'>Disconnect</button></div>
 <div id='screen'><div id='term'></div></div>
 <script src='/terminal/xterm.js'></script><script src='/terminal/term.js'></script></body></html>"""

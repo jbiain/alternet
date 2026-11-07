@@ -212,7 +212,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _html(self, title, body_html, code=200, desc=None):
         launcher = ""
-        if self.path.split("?")[0] in ("/", ""):
+        if self.path.split("?")[0] == "/bbs":
             from . import webterm
             launcher = webterm.launcher_html(self.server.home)
         desc = html.escape(desc or "A decentralised network of signed, content-addressed text sites. "
@@ -228,7 +228,7 @@ class Handler(BaseHTTPRequestHandler):
                     "<link rel='sitemap' type='application/xml' href='/sitemap.xml'>%s"
                     "<title>%s</title><style>%s</style></head><body><div class='box'>"
                     "<h1>Alternet BBS</h1>"
-                    "<nav><a href='/'>main menu</a> &middot; <a href='/directory'>known sites</a> &middot; <a href='/terminal'>terminal</a> &middot; "
+                    "<nav><a href='/'>terminal</a> &middot; <a href='/bbs'>main menu</a> &middot; <a href='/directory'>known sites</a> &middot; "
                     "<a href='/llms.txt'>for AI agents</a> &middot; "
                     "<a href='https://github.com/jbiain/alternet'>source</a></nav>"
                     "%s%s</div></body></html>"
@@ -237,9 +237,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         store, home = self.server.store, self.server.home
         path, _, query = self.path.partition("?")
-        if path == "/terminal" or path.startswith("/terminal/"):
+        if path == "/terminal" or path.startswith("/terminal/") or (path == "/" and "site=" not in query):
             from . import webterm
-            if webterm.handle_get(self, path, query):
+            if webterm.handle_get(self, "/terminal" if path == "/" else path, query):
                 return
         if path == "/robots.txt":
             # Explicit welcome, not just an absence of Disallow - including the common AI-crawler agents by
@@ -261,7 +261,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/sitemap.xml":
             base = self._base()
-            urls = [base + "/", base + "/directory", base + "/llms.txt"]
+            urls = [base + "/", base + "/bbs", base + "/directory", base + "/llms.txt"]
             for sid in store.sites():
                 body = store.info(sid)
                 if not body or not body.get("listed") or store.is_private(sid):
@@ -310,7 +310,7 @@ class Handler(BaseHTTPRequestHandler):
                         ("\n".join(rows) or "<p class='id'>(none listed yet)</p>"))
             self._html("Directory", body_html)
             return
-        if path == "/":
+        if path in ("/", "/bbs"):
             q = urllib.parse.parse_qs(query)
             ref = (q.get("site", [""])[0]).strip()
             if ref:
@@ -318,7 +318,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Location", "/s/" + urllib.parse.quote(ref, safe="@") + "/")
                 self.end_headers()
                 return
-            form = ('<form action="/" method="get" style="margin-bottom:1.5em">'
+            form = ('<form action="/bbs" method="get" style="margin-bottom:1.5em">'
                     '<input name="site" placeholder="site id, or id@address" size=44>'
                     '<button type="submit">Open</button></form>')
             install = ('<h2>Run your own node</h2>'
