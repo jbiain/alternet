@@ -64,6 +64,13 @@ def _expand(home, ref):
             if name_l not in pins:
                 pins[name_l] = sid
                 home.save_name_pins(pins)
+    if not target and not at:
+        from . import words
+        found = words.matches(name, home.store().sites())
+        if len(found) > 1:
+            raise NameChanged("the words %s match %d sites on this node; use the full id" % (name, len(found)))
+        if found:
+            return found[0]
     if not target:
         return ref
     return target if not at else target.partition("@")[0] + "@" + rest

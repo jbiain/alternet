@@ -86,9 +86,10 @@ def _nav(store, home):
         body = store.info(sid)
         if not body:
             continue
-        label = by_sid.get(sid, sid)
+        from . import words
+        label = by_sid.get(sid, words.encode(sid))
         rows.append('<a class="menu-item" href="/s/%s/">%s<span class="desc">%s</span></a>' %
-                     (sid, html.escape(label), sid if label != sid else ""))
+                     (sid, html.escape(label), sid))
     return "\n".join(rows) or "<p class='id'>(no public sites stored here yet)</p>"
 
 

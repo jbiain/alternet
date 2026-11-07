@@ -371,6 +371,19 @@ class WebTermTests(unittest.TestCase):
             for bad in ("nope", "../x", "room;ls", "", "-h"):
                 self.assertIsNone(resolve(h, bad), repr(bad))
 
+    def test_words(self):
+        from alternet import words
+        self.assertEqual(len(set(words.WORDS)), 2048)
+        a, b = "0123456789abcdef" * 2, "fedcba9876543210" * 2
+        w = words.encode(a)
+        self.assertRegex(w, r"^(\w{4}-){3}\w{4}$")
+        self.assertEqual(words.matches(w, [a, b]), [a])
+        self.assertEqual(words.matches(w.upper(), [a, b]), [a])
+        self.assertEqual(words.matches("baka-baka-baka-baka", [a, b]), [])
+        self.assertEqual(words.matches("room", [a]), [])
+        twin = a[:11] + "0" * 21
+        self.assertEqual(words.matches(w, [a, twin]), [a, twin])            # a collision is reported, never guessed
+
     def test_frames(self):
         import os as _os
         from alternet.webterm import _frame, _parse, MAX_FRAME
