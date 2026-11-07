@@ -124,7 +124,7 @@ class GatewayTests(unittest.TestCase):
             try:
                 port = srv.server_address[1]
                 conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-                conn.request("GET", "/")
+                conn.request("GET", "/bbs")
                 r = conn.getresponse()
                 body = r.read().decode()
                 self.assertIn(pub["body"]["site"], body)
