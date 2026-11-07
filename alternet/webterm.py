@@ -50,6 +50,31 @@ def _version():
     return str(max(int(os.path.getmtime(os.path.join(WEB, n))) for n in os.listdir(WEB)))
 
 
+NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}(/[A-Za-z0-9_.-]{1,48})?\Z")
+
+
+def resolve(home, text):
+    """A readable name -> a connectable target. Order: the launcher's names (webapps.json), then the
+    gateway's petnames (names.json). A target that is already an address is returned unchanged."""
+    text = (text or "").strip()
+    if TARGET.match(text):
+        return text
+    text = text.lower()
+    if not NAME.match(text):
+        return None
+    name, _, app = text.partition("/")
+    for it in json.loads(apps_json(home)):
+        if it["name"].lower() == name:
+            return it["address"] + ("/" + app if app else "")
+    try:
+        t = home.names().get(name)
+    except Exception:
+        t = None
+    if t and TARGET.match(t) and not app:
+        return t
+    return None
+
+
 def apps_json(home):
     """The launcher entries as JSON for the in-page menu (only well-formed addresses)."""
     try:
@@ -149,8 +174,9 @@ def _websocket(h, query):
     if (h.headers.get("Upgrade", "").lower() != "websocket" or not key
             or urllib.parse.urlparse(origin).netloc != host):         # same-origin only: no cross-site hijacking
         return _refuse(h, 403, "forbidden")
-    if not TARGET.match(target):
-        return _refuse(h, 400, "give an address: 32 hex characters, optionally /APP")
+    target = resolve(h.server.home, target)
+    if not target:
+        return _refuse(h, 400, "unknown name; give a name from the menu, or an address of 32 hex characters")
     if not slots.acquire(blocking=False):
         return _refuse(h, 503, "the gateway is busy (all %d terminal sessions are in use)" % MAX_SESSIONS)
     tmp = None

@@ -354,6 +354,23 @@ class WebTermTests(unittest.TestCase):
         for bad in ("", "abc", a + "/", a + "/../x", a + ";ls", a + "/a b", "A" * 32, a + "\n", "-h", a + "/" + "x" * 49):
             self.assertFalse(TARGET.match(bad), repr(bad))
 
+    def test_names_resolve(self):
+        import json as _j, tempfile
+        from alternet.home import Home
+        from alternet.webterm import resolve
+        with tempfile.TemporaryDirectory() as d:
+            h = Home(d)
+            a, b = "a" * 32, "b" * 32
+            with open(d + "/webapps.json", "w") as f:
+                _j.dump([{"name": "room", "address": a, "desc": "x"}], f)
+            h.save_names({"blog": b})
+            self.assertEqual(resolve(h, "room"), a)
+            self.assertEqual(resolve(h, "Room/chat"), a + "/chat")
+            self.assertEqual(resolve(h, "blog"), b)
+            self.assertEqual(resolve(h, a), a)
+            for bad in ("nope", "../x", "room;ls", "", "-h"):
+                self.assertIsNone(resolve(h, bad), repr(bad))
+
     def test_frames(self):
         import os as _os
         from alternet.webterm import _frame, _parse, MAX_FRAME

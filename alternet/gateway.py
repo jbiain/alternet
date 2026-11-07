@@ -334,6 +334,18 @@ class Handler(BaseHTTPRequestHandler):
             rest = urllib.parse.unquote(path[3:])
             ref, _, sub = rest.partition("/")
             site, _, addr = ref.partition("@")
+            if len(site) != 32 and not store.resolve(site):      # a readable name: petname or followed directory
+                from .cli import _expand, NameChanged
+                try:
+                    named = _expand(home, ref)
+                except NameChanged as e:
+                    self._html("Name changed", "<h1>Name changed</h1><p>%s</p>" % html.escape(str(e)), 409)
+                    return
+                if named != ref:
+                    self.send_response(302)
+                    self.send_header("Location", "/s/" + urllib.parse.quote(named, safe="@") + "/" + sub)
+                    self.end_headers()
+                    return
             sid = store.resolve(site) or site
             body = store.info(sid) if len(sid) == 32 else None
             if (not body or store.missing(body)) and len(sid) == 32 and self.server.session is not None:

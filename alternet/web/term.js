@@ -7,7 +7,7 @@
   term.open(document.getElementById("term")); term.focus();
   var enc = new TextEncoder(), ws = null, mode = "menu", sel = 0, note = "", typed = "";
   var items = apps.map(function (a) { return {label: a.name, desc: a.desc, run: function () { connect(a.address); }}; });
-  items.push({label: "open an address...", desc: "ADDRESS, ADDRESS/APP or SITE@ADDRESS", run: function () { mode = "input"; typed = ""; draw(); }});
+  items.push({label: "open an address...", desc: "a name, ADDRESS, ADDRESS/APP or SITE@ADDRESS", run: function () { mode = "input"; typed = ""; draw(); }});
   items.push({label: "known sites", desc: "the BBS and site directory", run: function () { location.href = "/bbs"; }});
   items.push({label: "for AI agents", desc: "plain-text description", run: function () { location.href = "/llms.txt"; }});
   items.push({label: "run your own node", desc: "curl -fsSL " + location.origin + "/install.sh | sh", run: function () { note = "Run this in a terminal:  curl -fsSL " + location.origin + "/install.sh | sh"; draw(); }});
