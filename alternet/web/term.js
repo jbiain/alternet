@@ -2,6 +2,8 @@
   var q = new URLSearchParams(location.search), target = q.get("open") || "";
   var box = document.getElementById("form"), screen = document.getElementById("screen"), status = document.getElementById("status");
   document.getElementById("target").value = target;
+  var note = sessionStorage.getItem("alt-note");
+  if (note) { sessionStorage.removeItem("alt-note"); document.getElementById("note").textContent = note; }
   document.getElementById("go").onclick = function () {
     var v = document.getElementById("target").value.trim();
     if (v) location.search = "?open=" + encodeURIComponent(v);
@@ -15,9 +17,14 @@
                          "/terminal/ws?open=" + encodeURIComponent(target) + "&cols=" + cols + "&rows=" + rows);
   ws.binaryType = "arraybuffer";
   var enc = new TextEncoder();
-  ws.onopen = function () { status.textContent = "connected through this gateway. Ctrl-] disconnects."; };
-  ws.onmessage = function (e) { term.write(new Uint8Array(e.data)); };
-  ws.onclose = function () { status.textContent = "disconnected"; term.write("\r\n[connection closed]\r\n"); };
+  var got = false, opened = Date.now();
+  ws.onopen = function () { status.textContent = "connected through this gateway"; };
+  ws.onmessage = function (e) { got = true; term.write(new Uint8Array(e.data)); };
+  ws.onclose = function () {
+    var secs = (Date.now() - opened) / 1000;
+    sessionStorage.setItem("alt-note", !got ? "Could not start that session (host unreachable, or the gateway is full). Try again."
+      : secs >= 890 ? "Session timed out after a period of inactivity." : "Session ended.");
+    location.replace(location.pathname);
+  };
   term.onData(function (d) { if (ws.readyState === 1) ws.send(enc.encode(d)); });
-  document.getElementById("quit").onclick = function () { ws.close(); };
 })();
