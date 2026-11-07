@@ -915,13 +915,16 @@ def connect(home, ref, timeout=30, retries=3):
         net.node_ids(home)
         my_id = RNS.Identity.from_file(os.path.join(home.path, "node.identity"))
     if dh is None:
-        print("Looking for a host serving this app (hosts announce every 2 minutes, this can take a while) ...",
-              file=sys.stderr)
+        t0, said = time.time(), False                        # only speak up if the search takes a while
         end = time.time() + max(timeout, 130)
         # A bare 32-hex value may be a host address rather than a site id: after a short wait, try it as one.
         early = time.time() + 15 if _hex32(ref) else None
         asked = 0.0
         while want_site not in listener.hosts and time.time() < end:
+            if not said and time.time() - t0 > 6:
+                said = True
+                print("Still looking for a host serving this app (hosts announce every 2 minutes, "
+                      "so this can take a while) ...", file=sys.stderr)
             if early:
                 now = time.time()
                 if now > early:
@@ -936,21 +939,24 @@ def connect(home, ref, timeout=30, retries=3):
         if dh is None and early:
             dh = bytes.fromhex(ref)
             appname, want_site = "", None            # it is an address, not a site id: accept whatever site the host serves
-            print("No site announce seen; trying %s as a host address ..." % ref, file=sys.stderr)
+            if said:
+                print("No site announce seen; trying %s as a host address ..." % ref, file=sys.stderr)
         if dh is None:
             raise SystemExit("alternet: no host announced this app yet (hosts announce every 2 minutes). "
                              "Try again, or use SITE@HOSTADDRESS.")
-    else:
-        print("Looking for the app ...", file=sys.stderr)
     link = None
     t_up = time.time()                                   # interfaces come up in the background: a request sent before
     while time.time() - t_up < 8 and not any(getattr(i, "online", False) for i in RNS.Transport.interfaces):
         time.sleep(0.2)                                  # the relay link exists goes nowhere
+    said_path = False
     for attempt in range(retries):
         t = time.time()
         ident = RNS.Identity.recall(dh)
         last_req = 0.0
         while (ident is None or not RNS.Transport.has_path(dh)) and time.time() - t < timeout / 2:
+            if not said_path and time.time() - t > 6:
+                said_path = True
+                print("Still looking for the app ...", file=sys.stderr)
             if time.time() - last_req >= 5:              # repeated requests inside a few seconds are discarded
                 RNS.Transport.request_path(dh)
                 last_req = time.time()
