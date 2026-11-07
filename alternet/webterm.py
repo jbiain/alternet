@@ -12,7 +12,7 @@ ASSETS = {"/terminal/xterm.js": ("xterm.js", "application/javascript"), "/termin
           "/terminal/term.js": ("term.js", "application/javascript"), "/terminal/LICENSE-xterm.txt": ("LICENSE-xterm.txt", "text/plain")}
 
 PAGE = """<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
-<title>Alternet</title><link rel='stylesheet' href='/terminal/xterm.css'>
+<title>Alternet</title><link rel='stylesheet' href='/terminal/xterm.css?v=<!--V-->'>
 <style>body{margin:0;background:#000;color:#ddd;font:15px/1.4 Menlo,Consolas,monospace}#screen{padding:8px}a{color:#7cf}#bar{padding:4px 8px;color:#999}</style></head><body>
 <div id='bar'><span id='status'></span></div>
 <div id='screen'><div id='term'></div></div>
@@ -20,7 +20,7 @@ PAGE = """<!doctype html><html><head><meta charset='utf-8'><meta name='viewport'
 Without it: <a href='/bbs'>read the sites</a>, <a href='/llms.txt'>plain-text overview</a>, or install the client:
 <code>curl -fsSL /install.sh | sh</code>.</p></noscript>
 <script id='apps' type='application/json'><!--APPS--></script>
-<script src='/terminal/xterm.js'></script><script src='/terminal/term.js'></script></body></html>"""
+<script src='/terminal/xterm.js?v=<!--V-->'></script><script src='/terminal/term.js?v=<!--V-->'></script></body></html>"""
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; "
        "img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 
@@ -45,6 +45,11 @@ def launcher_html(home):
     return ("<div class='apps'><b>Open an app in your browser:</b><ul>%s</ul></div>" % "".join(rows)) if rows else ""
 
 
+def _version():
+    """Changes whenever a bundled asset changes, so browsers never run a stale term.js against a newer page."""
+    return str(max(int(os.path.getmtime(os.path.join(WEB, n))) for n in os.listdir(WEB)))
+
+
 def apps_json(home):
     """The launcher entries as JSON for the in-page menu (only well-formed addresses)."""
     try:
@@ -66,7 +71,7 @@ def apps_json(home):
 def handle_get(h, path, query):
     """Serve /terminal pages and assets. Returns True if the request was handled."""
     if path == "/terminal":
-        data = PAGE.replace("<!--APPS-->", apps_json(h.server.home)).encode()
+        data = PAGE.replace("<!--APPS-->", apps_json(h.server.home)).replace("<!--V-->", _version()).encode()
         h.send_response(200)
         h.send_header("Content-Type", "text/html; charset=utf-8")
         h.send_header("Content-Security-Policy", CSP)
@@ -83,7 +88,7 @@ def handle_get(h, path, query):
         h.send_response(200)
         h.send_header("Content-Type", ctype)
         h.send_header("Content-Length", str(len(data)))
-        h.send_header("Cache-Control", "public, max-age=86400")
+        h.send_header("Cache-Control", "no-cache")
         h.end_headers()
         if not getattr(h, "_head_only", False):
             h.wfile.write(data)
